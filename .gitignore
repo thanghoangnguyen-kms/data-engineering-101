@@ -7,3 +7,8 @@
 # Session/temp artifacts
 .copilot/
 *.tmp
+
+# Agent/Copilot internals
+.agents/
+.github/
+skills-lock.json
