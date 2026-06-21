@@ -1,0 +1,9 @@
+# Obsidian local workspace (per-device settings)
+.obsidian/
+
+# macOS
+.DS_Store
+
+# Session/temp artifacts
+.copilot/
+*.tmp
