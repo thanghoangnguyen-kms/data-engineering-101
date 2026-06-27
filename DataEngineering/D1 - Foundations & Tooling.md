@@ -5,7 +5,8 @@ tags:
   - foundations
 date: 2026-06-20
 status: complete
-domain: 1 of 7
+domain: "1 of 7"
+track: data-engineering
 ---
 
 # D1 — Foundations & Tooling
@@ -14,6 +15,9 @@ domain: 1 of 7
 
 > [!NOTE] Domain Overview
 > This domain bridges the gap from **Data Analyst → Data Engineer**. You'll shift from consuming data to building the systems that produce it, and pick up the core tooling every DE uses daily.
+
+> [!TIP] Already completed B1?
+> If you've completed [[Backend/B1 - Foundations & Dev Setup|B1 — Foundations & Dev Setup]] from the Backend track, you can skim §1.1–1.5. Focus on **§1.6 — Dev Environment & DuckDB Setup**, which covers DuckDB and tooling specific to the Data Engineering track.
 
 ---
 

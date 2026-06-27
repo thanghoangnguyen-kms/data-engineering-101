@@ -2,7 +2,22 @@
 
 An Obsidian vault for onboarding Intern Data Engineers through a structured 6-domain learning roadmap — from foundations to production-ready skills.
 
-## 🗺️ Learning Path
+## 🛣️ Tracks
+
+### 🖥️ Backend Engineering Track
+
+| # | Domain | Status |
+|---|--------|--------|
+| B1 | Foundations & Dev Setup | 🔴 Not started |
+| B2 | Web & API Design | 🔴 Not started |
+| B3 | Databases & ORM | 🔴 Not started |
+| B4 | Authentication & Security | 🔴 Not started |
+| B5 | Testing & Code Quality | 🔴 Not started |
+| B6 | Async, Queues & Background Jobs | 🔴 Not started |
+| B7 | Microservices & Containers | 🔴 Not started |
+| B8 | Capstone Project | 🔴 Not started |
+
+### 🗄️ Data Engineering Track
 
 | # | Domain | Status |
 |---|--------|--------|

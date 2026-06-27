@@ -7,6 +7,7 @@ date: 2026-06-20
 status: not-started
 domain: "7 of 7"
 verified_by: ""
+track: data-engineering
 ---
 
 # CP7 — AI Data Engineering *(Optional)*

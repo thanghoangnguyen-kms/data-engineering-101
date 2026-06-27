@@ -6,6 +6,7 @@ date: 2026-06-20
 status: not-started
 domain: "2 of 7"
 verified_by: ""
+track: data-engineering
 ---
 
 # CP2 — SQL Proficiency

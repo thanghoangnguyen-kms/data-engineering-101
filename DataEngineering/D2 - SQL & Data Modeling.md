@@ -7,6 +7,7 @@ tags:
 date: 2026-06-20
 status: complete
 domain: "2 of 7"
+track: data-engineering
 ---
 
 # D2 — SQL & Data Modeling

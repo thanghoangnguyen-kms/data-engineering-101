@@ -8,6 +8,7 @@ tags:
 date: 2026-06-20
 status: not-started
 domain: "6 of 7"
+track: data-engineering
 ---
 
 # D6 — Cloud & Orchestration

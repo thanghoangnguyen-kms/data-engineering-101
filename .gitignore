@@ -12,3 +12,6 @@
 .agents/
 .github/
 skills-lock.json
+
+# Internal design docs / specs
+docs/
