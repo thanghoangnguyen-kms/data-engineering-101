@@ -80,7 +80,7 @@ async def main() -> None:
 
 Without `gather()`, these would run one after another — 3× slower.
 
-If one coroutine raises an exception, `gather()` propagates it immediately and cancels the rest by default. Pass `return_exceptions=True` to collect exceptions as values instead.
+If one coroutine raises an exception, `gather()` propagates it immediately — but other already-running tasks **continue running** in the background unless you cancel them manually. Pass `return_exceptions=True` to collect exceptions as values instead of raising.
 
 > [!TIP] `asyncio.TaskGroup` — the Modern Alternative (Python 3.11+)
 > `TaskGroup` provides structured concurrency: if any task fails, all others are cancelled automatically — no stray tasks left running.
@@ -142,6 +142,8 @@ async def handler() -> dict:
 
 ```python
 # app/routers/auth.py
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -286,8 +288,9 @@ async def send_email(ctx: dict, email: str) -> None:
 
 ```python
 # app/routers/auth.py
-from arq import ArqRedis
+from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends
+from fastapi import Request
 
 from app.dependencies.arq import get_arq
 
@@ -314,39 +317,30 @@ Wire the ARQ connection pool into FastAPI's lifespan:
 # app/dependencies/arq.py
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
+from fastapi import Request
 
 from app.core.config import settings
 
-_arq_pool: ArqRedis | None = None
 
-
-async def get_arq() -> ArqRedis:
-    return _arq_pool  # type: ignore[return-value]
-
-
-async def create_arq_pool() -> ArqRedis:
-    global _arq_pool
-    _arq_pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-    return _arq_pool
-
-
-async def close_arq_pool() -> None:
-    if _arq_pool:
-        await _arq_pool.aclose()
+async def get_arq(request: Request) -> ArqRedis:
+    return request.app.state.arq
 ```
 
 ```python
 # app/main.py
 from contextlib import asynccontextmanager
+from arq import create_pool
+from arq.connections import RedisSettings
 from fastapi import FastAPI
-from app.dependencies.arq import create_arq_pool, close_arq_pool
+
+from app.core.config import settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await create_arq_pool()
+    app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     yield
-    await close_arq_pool()
+    await app.state.arq.aclose()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -419,18 +413,35 @@ ARQ has built-in cron support — no additional library needed:
 ```python
 # app/worker.py
 from arq import cron
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+
+from app.core.config import settings as app_settings
 
 
 async def purge_expired_tokens(ctx: dict) -> None:
     """Delete expired JWT revocation records. Safe to run multiple times."""
-    db = ctx["db_session"]
-    await db.execute("DELETE FROM revoked_tokens WHERE expires_at < NOW()")
-    await db.commit()
+    session: AsyncSession = ctx["db_session_factory"]()
+    async with session:
+        await session.execute(text("DELETE FROM revoked_tokens WHERE expires_at < NOW()"))
+        await session.commit()
 
 
 async def send_weekly_digest(ctx: dict) -> None:
     """Send weekly digest emails to all active users."""
     ...
+
+
+async def startup(ctx: dict) -> None:
+    """Create shared resources once when the worker starts."""
+    import httpx
+    ctx["http_client"] = httpx.AsyncClient()
+    engine = create_async_engine(app_settings.database_url)
+    ctx["db_session_factory"] = async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def shutdown(ctx: dict) -> None:
+    """Clean up shared resources when the worker stops."""
+    await ctx["http_client"].aclose()
 
 
 class WorkerSettings:
@@ -441,7 +452,7 @@ class WorkerSettings:
     ]
     on_startup = startup
     on_shutdown = shutdown
-    redis_settings = RedisSettings.from_dsn(settings.redis_url)
+    redis_settings = RedisSettings.from_dsn(app_settings.redis_url)
 ```
 
 ARQ cron runs inside the existing worker process — no extra service needed.
@@ -489,10 +500,10 @@ def stop_scheduler() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_scheduler()
-    await create_arq_pool()
+    app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     yield
     stop_scheduler()
-    await close_arq_pool()
+    await app.state.arq.aclose()
 ```
 
 **Choosing a scheduling approach**
