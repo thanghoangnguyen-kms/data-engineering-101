@@ -15,7 +15,7 @@ track: backend
 **Back to:** [[Backend/00 - Backend Track Roadmap|Backend Track Roadmap]]
 
 > [!NOTE] Domain Overview
-> You'll connect a FastAPI application to PostgreSQL using SQLAlchemy ORM (async), manage schema changes with Alembic migrations, add Redis caching, and learn two key data access patterns: Repository Pattern and Unit of Work.
+> You'll connect a FastAPI application to PostgreSQL using SQLAlchemy ORM (async), manage schema changes with Alembic migrations, add Redis caching, and learn three key data access patterns: Repository Pattern, Unit of Work, and Mapper Pattern.
 
 ---
 
@@ -1051,6 +1051,135 @@ HTTP layer       business logic           data access        transaction boundar
 
 ---
 
+## 3.8 — Mapper Pattern
+
+> [!NOTE]
+> The **Mapper Pattern** converts data between layers so each layer speaks its own language.
+> SQLAlchemy models are a database concern — they shouldn't leak into your routes.
+> Pydantic request/response DTOs are an HTTP concern — they shouldn't reach your domain.
+> A mapper sits between them and translates cleanly in both directions.
+
+### Why Mappers Matter
+
+Without mappers, you end up with SQLAlchemy models passed directly into Pydantic schemas
+or routes importing database models. This couples your HTTP layer to your DB schema:
+
+```python
+# ❌ Anti-pattern — route directly returns the ORM model
+@router.get("/users/{id}")
+async def get_user(id: UUID, session: AsyncSession = Depends(get_db)):
+    user = await session.get(UserModel, id)
+    return user          # leaks DB model into the HTTP response
+```
+
+```python
+# ✅ Correct — route returns a response DTO; mapper handles the conversion
+@router.get("/users/{id}")
+async def get_user(id: UUID, user_svc: UserService = Depends(get_user_service)):
+    return await user_svc.get_by_id(id)   # returns ResponseUserDTO — no SQLAlchemy
+```
+
+### Mapper Implementation
+
+A mapper is a plain class with static methods — no state, no dependencies:
+
+```python
+# app/orchestration/user/user_mapper.py
+from app.domain.user.entities.user import User
+from app.orchestration.user.dto.request_create_user_dto import RequestCreateUserDTO
+from app.orchestration.user.dto.response_user_dto import ResponseUserDTO
+
+class UserMapper:
+    @staticmethod
+    def to_entity(dto: RequestCreateUserDTO) -> User:
+        """DTO → Domain Entity (used before saving)"""
+        return User(
+            email=dto.email,
+            full_name=dto.full_name,
+        )
+
+    @staticmethod
+    def to_response_dto(entity: User) -> ResponseUserDTO:
+        """Domain Entity → Response DTO (used before returning from route)"""
+        return ResponseUserDTO(
+            id=entity.id,
+            email=entity.email,
+            full_name=entity.full_name,
+            created_at=entity.created_at,
+        )
+```
+
+The orchestration service calls the mapper — it never exposes raw entities or ORM models
+to callers:
+
+```python
+# app/orchestration/user/user_service.py
+class UserService:
+    def __init__(self, user_repo: IUserRepository, session_factory) -> None:
+        self._user_repo = user_repo
+        self._session_factory = session_factory
+
+    async def create(self, dto: RequestCreateUserDTO) -> ResponseUserDTO:
+        entity = UserMapper.to_entity(dto)
+        async with UnitOfWork(self._session_factory) as uow:
+            saved = await self._user_repo.save(entity, session=uow.session)
+        return UserMapper.to_response_dto(saved)
+
+    async def get_by_id(self, id: UUID) -> ResponseUserDTO:
+        entity = await self._user_repo.get_by_id(id)
+        if entity is None:
+            raise NotFoundError(f"User {id} not found")
+        return UserMapper.to_response_dto(entity)
+```
+
+### DTO Naming Conventions
+
+Follow these naming patterns — they match the production codebase you'll work in:
+
+| DTO Type       | Pattern                        | Example                   |
+|----------------|--------------------------------|---------------------------|
+| Create request | `Request{Action}{Resource}DTO` | `RequestCreateUserDTO`    |
+| Update request | `Request{Action}{Resource}DTO` | `RequestUpdateUserDTO`    |
+| Response       | `Response{Resource}DTO`        | `ResponseUserDTO`         |
+
+DTOs are plain Pydantic models — they carry data across layer boundaries, nothing more:
+
+```python
+# app/orchestration/user/dto/request_create_user_dto.py
+from pydantic import BaseModel, EmailStr
+
+class RequestCreateUserDTO(BaseModel):
+    email: EmailStr
+    full_name: str
+
+# app/orchestration/user/dto/response_user_dto.py
+from pydantic import BaseModel
+from uuid import UUID
+from datetime import datetime
+
+class ResponseUserDTO(BaseModel):
+    id: UUID
+    email: str
+    full_name: str
+    created_at: datetime
+```
+
+> [!IMPORTANT] Data flows one way through mappers
+> The direction is always:
+> ```
+> HTTP request body → RequestDTO → Mapper.to_entity() → Domain Entity → Repository
+> Repository → Domain Entity → Mapper.to_response_dto() → ResponseDTO → HTTP response
+> ```
+> SQLAlchemy models stay in `infrastructure/`. Domain entities stay in `domain/`.
+> DTOs stay in `orchestration/`. Nothing crosses these boundaries without a mapper.
+
+> [!TIP] One mapper per domain context
+> `UserMapper` handles `User` entities. `OrderMapper` handles `Order` entities. Keep
+> them small and focused — if a mapper is getting complex, that's usually a sign the
+> domain boundary needs rethinking.
+
+---
+
 ## ✅ Practice Checklist
 
 - [ ] Configure `pydantic-settings` to load `DATABASE_URL` and `REDIS_URL` from a `.env` file
@@ -1064,6 +1193,7 @@ HTTP layer       business logic           data access        transaction boundar
 - [ ] Configure `pool_size`, `max_overflow`, and `pool_pre_ping` on the engine
 - [ ] Implement `AbstractUserRepository` and `SQLAlchemyUserRepository` with fully typed method signatures
 - [ ] Wrap two repository operations in a single `AsyncSession` transaction and verify that a failure in the second rolls back the first
+- [ ] Create a `UserMapper` with `to_entity()` and `to_response_dto()` static methods and use it in a service so no SQLAlchemy model is returned from a route
 
 ## 📚 Domain References
 
@@ -1097,6 +1227,11 @@ HTTP layer       business logic           data access        transaction boundar
 
 **Q:** What is the Repository Pattern?
 **A:** An abstraction between business logic and the database. An abstract class defines the operations; a concrete class implements them with SQLAlchemy. Business logic calls the interface — never the DB directly.
+
+**Q:** What is the Mapper Pattern?
+**A:** A class with static methods that converts between layers — `to_entity()` turns a request DTO into a domain entity before saving; `to_response_dto()` turns a domain entity into a response DTO before returning from a route. It keeps SQLAlchemy models out of routes and Pydantic DTOs out of the domain.
+
+---
 
 **Q:** What is the Unit of Work pattern?
 **A:** Grouping multiple write operations into one transaction so they all succeed or all fail together. In SQLAlchemy async, the `AsyncSession` is the Unit of Work — nothing commits until you call `await session.commit()`.
