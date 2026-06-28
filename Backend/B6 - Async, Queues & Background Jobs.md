@@ -107,19 +107,8 @@ async def handler() -> dict:
     return {"status": "ok"}  # returns before notification finishes
 ```
 
-> [!WARNING] Hold a Reference to Tasks
-> The event loop only keeps a weak reference to tasks. If you don't store the task object, it can be garbage-collected mid-execution — silently dropped.
-> ```python
-> # ❌ Task may vanish before it finishes
-> asyncio.create_task(send_notification(42))
->
-> # ✅ Hold a reference
-> background_tasks = set()
-> task = asyncio.create_task(send_notification(42))
-> background_tasks.add(task)
-> task.add_done_callback(background_tasks.discard)
-> ```
-> For anything that must reliably complete, use FastAPI's `BackgroundTasks` or a real task queue.
+> [!WARNING] Unwaited Tasks May Be Garbage-Collected
+> The event loop holds only a weak reference to tasks. If nothing else holds the task object, it can be silently dropped before it finishes. For anything that must reliably complete, use `BackgroundTasks` (section 6.2) or a real task queue (section 6.3).
 
 > [!WARNING] Don't Block the Event Loop
 > The event loop runs on a single thread. Anything that doesn't `await` holds the thread and blocks every other request:
@@ -209,7 +198,7 @@ flowchart LR
     Worker -->|writes result| Redis
 ```
 
-The worker is a **separate process** — it runs alongside FastAPI but independently. If FastAPI restarts, jobs already in Redis are not lost. If the worker restarts mid-job, ARQ re-queues the job automatically.
+The worker is a **separate process** — it runs alongside FastAPI but independently. If FastAPI restarts, jobs already in Redis are not lost.
 
 **Install**
 
@@ -224,7 +213,6 @@ ARQ uses the same Redis connection already configured in B3. No new infrastructu
 ```python
 # app/worker.py
 import httpx
-from arq import Retry
 from arq.connections import RedisSettings
 
 from app.core.config import settings
@@ -232,31 +220,19 @@ from app.core.config import settings
 
 async def send_welcome_email(ctx: dict, email: str) -> None:
     """Send a welcome email. Must be idempotent — may run more than once."""
-    client: httpx.AsyncClient = ctx["http_client"]
-    response = await client.post(
-        "https://api.emailprovider.com/send",
-        json={"to": email, "template": "welcome"},
-    )
-    if response.status_code != 200:
-        raise Retry(defer=ctx["job_try"] * 5)  # retry with back-off: 5s, 10s, 15s...
-
-
-async def startup(ctx: dict) -> None:
-    """Create shared resources once when the worker starts."""
-    ctx["http_client"] = httpx.AsyncClient()
-
-
-async def shutdown(ctx: dict) -> None:
-    """Clean up shared resources when the worker stops."""
-    await ctx["http_client"].aclose()
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            "https://api.emailprovider.com/send",
+            json={"to": email, "template": "welcome"},
+        )
 
 
 class WorkerSettings:
     functions = [send_welcome_email]
-    on_startup = startup
-    on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
 ```
+
+Every task function receives `ctx` as its first argument (ARQ injects it automatically) followed by your own parameters.
 
 > [!IMPORTANT] Every ARQ Task Must Be Idempotent
 > ARQ uses **pessimistic execution**: if a worker shuts down while a job is running, the job is cancelled and re-queued. It **will run again** when the worker restarts.
@@ -268,67 +244,14 @@ class WorkerSettings:
 > - ❌ Plain `INSERT` — creates duplicate rows on retry
 > - ❌ Decrementing a counter without a guard — double-counted on retry
 
-**`on_startup` / `on_shutdown` — shared resources**
-
-The `ctx` dict is passed to every task function. Create expensive resources (DB sessions, HTTP clients, connection pools) once in `on_startup` — not inside each task call:
-
-```python
-# ❌ Opens a new HTTP client for every job — wasteful
-async def send_email(ctx: dict, email: str) -> None:
-    async with httpx.AsyncClient() as client:   # created and destroyed each time
-        await client.post(...)
-
-# ✅ Reuse the client created once at startup
-async def send_email(ctx: dict, email: str) -> None:
-    client: httpx.AsyncClient = ctx["http_client"]  # already open
-    await client.post(...)
-```
-
 **Enqueue from a FastAPI route (producer)**
 
-```python
-# app/routers/auth.py
-from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends
-from fastapi import Request
-
-from app.dependencies.arq import get_arq
-
-router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-@router.post("/register", status_code=201)
-async def register(
-    body: RegisterRequest,
-    db: AsyncSession = Depends(get_db),
-    arq: ArqRedis = Depends(get_arq),
-) -> dict:
-    user = User(email=body.email, hashed_password=hash_password(body.password))
-    db.add(user)
-    await db.commit()
-
-    await arq.enqueue_job("send_welcome_email", body.email)
-    return {"email": body.email}
-```
-
-Wire the ARQ connection pool into FastAPI's lifespan:
-
-```python
-# app/dependencies/arq.py
-from arq import create_pool
-from arq.connections import ArqRedis, RedisSettings
-from fastapi import Request
-
-from app.core.config import settings
-
-
-async def get_arq(request: Request) -> ArqRedis:
-    return request.app.state.arq
-```
+Wire an ARQ connection pool into FastAPI's lifespan, then access it from your routes via `request.app.state`:
 
 ```python
 # app/main.py
 from contextlib import asynccontextmanager
+
 from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import FastAPI
@@ -346,6 +269,33 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 ```
 
+```python
+# app/routers/auth.py
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
+from app.schemas.auth import RegisterRequest
+from app.core.security import hash_password
+from app.models.user import User
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.post("/register", status_code=201)
+async def register(
+    body: RegisterRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    user = User(email=body.email, hashed_password=hash_password(body.password))
+    db.add(user)
+    await db.commit()
+
+    await request.app.state.arq.enqueue_job("send_welcome_email", body.email)
+    return {"email": body.email}
+```
+
 **Run the worker**
 
 ```bash
@@ -353,10 +303,44 @@ app = FastAPI(lifespan=lifespan)
 arq app.worker.WorkerSettings
 ```
 
+> [!TIP] Shared Resources with `on_startup` / `on_shutdown`
+> Opening a new HTTP client inside every task works, but is wasteful at scale. Create expensive resources once when the worker starts and share them via `ctx`:
+> ```python
+> import httpx
+>
+> async def startup(ctx: dict) -> None:
+>     ctx["http_client"] = httpx.AsyncClient()
+>
+> async def shutdown(ctx: dict) -> None:
+>     await ctx["http_client"].aclose()
+>
+> async def send_welcome_email(ctx: dict, email: str) -> None:
+>     client: httpx.AsyncClient = ctx["http_client"]  # reuse the shared client
+>     await client.post(...)
+>
+> class WorkerSettings:
+>     functions = [send_welcome_email]
+>     on_startup = startup
+>     on_shutdown = shutdown
+>     redis_settings = RedisSettings.from_dsn(settings.redis_url)
+> ```
+
+> [!TIP] Retry with Back-off
+> Raise `Retry` inside a task to schedule it to run again after a delay. `ctx["job_try"]` increments with each attempt:
+> ```python
+> from arq import Retry
+>
+> async def send_welcome_email(ctx: dict, email: str) -> None:
+>     response = await client.post(...)
+>     if response.status_code != 200:
+>         raise Retry(defer=ctx["job_try"] * 5)  # 5s, 10s, 15s...
+> ```
+> ARQ retries up to 5 times by default.
+
 > [!TIP] Job Deduplication with `_job_id`
 > To prevent the same job from being enqueued twice (e.g., don't send two welcome emails to the same user), pass a stable `_job_id`. If a job with that ID is already queued or running, `enqueue_job` returns `None` silently:
 > ```python
-> await arq.enqueue_job("send_welcome_email", body.email, _job_id=f"welcome:{user.id}")
+> await request.app.state.arq.enqueue_job("send_welcome_email", body.email, _job_id=f"welcome:{user.id}")
 > ```
 
 **Celery — the industry standard**
@@ -411,37 +395,19 @@ A task queue is point-to-point: one producer, one worker per job. A message queu
 ARQ has built-in cron support — no additional library needed:
 
 ```python
-# app/worker.py
+# app/worker.py  (extend the WorkerSettings from 6.3)
 from arq import cron
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-
-from app.core.config import settings as app_settings
 
 
 async def purge_expired_tokens(ctx: dict) -> None:
     """Delete expired JWT revocation records. Safe to run multiple times."""
-    session: AsyncSession = ctx["db_session_factory"]()
-    async with session:
-        await session.execute(text("DELETE FROM revoked_tokens WHERE expires_at < NOW()"))
-        await session.commit()
+    print("Purging expired tokens...")
+    # In a real project: execute a DELETE query via a shared DB session in ctx
 
 
 async def send_weekly_digest(ctx: dict) -> None:
     """Send weekly digest emails to all active users."""
-    ...
-
-
-async def startup(ctx: dict) -> None:
-    """Create shared resources once when the worker starts."""
-    import httpx
-    ctx["http_client"] = httpx.AsyncClient()
-    engine = create_async_engine(app_settings.database_url)
-    ctx["db_session_factory"] = async_sessionmaker(engine, expire_on_commit=False)
-
-
-async def shutdown(ctx: dict) -> None:
-    """Clean up shared resources when the worker stops."""
-    await ctx["http_client"].aclose()
+    print("Sending weekly digest...")
 
 
 class WorkerSettings:
@@ -450,61 +416,14 @@ class WorkerSettings:
         cron(purge_expired_tokens, hour=3, minute=0),          # 3:00 AM daily
         cron(send_weekly_digest, weekday=0, hour=9, minute=0), # Monday 9:00 AM
     ]
-    on_startup = startup
-    on_shutdown = shutdown
-    redis_settings = RedisSettings.from_dsn(app_settings.redis_url)
+    redis_settings = RedisSettings.from_dsn(settings.redis_url)
 ```
 
 ARQ cron runs inside the existing worker process — no extra service needed.
 
 **Option 2: APScheduler (standalone scheduler, no task queue needed)**
 
-If you're not using ARQ, `APScheduler` v3 runs inside the FastAPI process:
-
-```bash
-uv add "apscheduler>=3,<4"
-```
-
-> [!WARNING] APScheduler Version
-> APScheduler v4 is a complete API rewrite — code written for v3 does not work on v4. Pin explicitly with `"apscheduler>=3,<4"`.
-
-```python
-# app/scheduler.py
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
-
-scheduler = AsyncIOScheduler()
-
-
-async def cleanup_old_sessions() -> None:
-    print("Cleaning up expired sessions...")
-
-
-async def health_ping() -> None:
-    print("Service alive")
-
-
-def start_scheduler() -> None:
-    scheduler.add_job(cleanup_old_sessions, CronTrigger(hour=2, minute=30))  # 2:30 AM daily
-    scheduler.add_job(health_ping, IntervalTrigger(minutes=5))
-    scheduler.start()
-
-
-def stop_scheduler() -> None:
-    scheduler.shutdown()
-```
-
-```python
-# app/main.py — wire into lifespan
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    start_scheduler()
-    app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-    yield
-    stop_scheduler()
-    await app.state.arq.aclose()
-```
+If you're not using ARQ, `APScheduler` v3 can run a scheduler directly inside the FastAPI process — useful for simple interval tasks without Redis. Install with `uv add "apscheduler>=3,<4"` (v4 is a complete API rewrite — pin the version explicitly). Docs: https://apscheduler.readthedocs.io/en/3.x/
 
 **Choosing a scheduling approach**
 
@@ -525,10 +444,8 @@ async def lifespan(app: FastAPI):
 - [ ] Use `asyncio.gather()` to make 3 HTTP requests concurrently and compare the time to sequential requests
 - [ ] Identify a slow endpoint in your app and refactor it to use `FastAPI.BackgroundTasks` — verify the response time improves
 - [ ] Define an ARQ task function that sends a welcome email — make it idempotent (safe to run twice without side effects)
-- [ ] Wire an ARQ connection pool into FastAPI's lifespan using `create_arq_pool` / `close_arq_pool`
-- [ ] Enqueue a job from a FastAPI route and verify it appears in the ARQ worker logs
-- [ ] Add `on_startup` and `on_shutdown` to `WorkerSettings` and share an `httpx.AsyncClient` via `ctx`
-- [ ] Implement retry with `raise Retry(defer=ctx["job_try"] * 5)` and observe the back-off in worker logs
+- [ ] Wire an ARQ connection pool into FastAPI's lifespan and enqueue a job from a route
+- [ ] Run the ARQ worker and verify your enqueued job appears in the worker logs
 - [ ] Add a cron job to `WorkerSettings` that runs every minute — verify it fires in the worker logs
 - [ ] Draw the producer → broker → worker architecture from memory, labeling which process runs where
 - [ ] Explain to a colleague: why must every ARQ task be idempotent?
