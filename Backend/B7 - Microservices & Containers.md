@@ -1,12 +1,12 @@
 ---
 tags:
-  - DE101
+  - BE101
   - backend-7
   - docker
   - microservices
 date: 2026-06-27
-status: in-progress
-domain: "7 of 8"
+status: complete
+domain: 7 of 8
 track: backend
 ---
 4

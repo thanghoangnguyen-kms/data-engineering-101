@@ -1,6 +1,6 @@
 ---
 tags:
-  - DE101
+  - BE101
   - backend-1
   - foundations
 date: 2026-06-27

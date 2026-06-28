@@ -1,6 +1,6 @@
 ---
 tags:
-  - DE101
+  - BE101
   - roadmap
   - backend
 date: 2026-06-27
@@ -23,7 +23,7 @@ track: backend
 | # | Domain | Status | Checkpoint |
 |---|--------|--------|-----------|
 | 1 | [[Backend/B1 - Foundations & Dev Setup\|B1 — Foundations & Dev Setup]] | ✅ Complete | [[Backend/Checkpoints/CB1 - Dev Environment Ready\|CB1]] |
-| 2 | [[Backend/B2 - Web & API Design\|B2 — Web & API Design]] | ✅ Complete | [[Backend/Checkpoints/CB2 - API Built & Documented\|CB2]] |
+| 2 | [[Backend/B2 - Web & API Fundamentals\|B2 — Web & API Fundamentals]] | ✅ Complete | [[Backend/Checkpoints/CB2 - API Built & Documented\|CB2]] |
 | 3 | [[Backend/B3 - Databases & ORM\|B3 — Databases & ORM]] | ✅ Complete | [[Backend/Checkpoints/CB3 - DB & ORM Proficiency\|CB3]] |
 | 4 | [[Backend/B4 - Authentication & Security\|B4 — Authentication & Security]] | ✅ Complete | [[Backend/Checkpoints/CB4 - Auth & Security Verified\|CB4]] |
 | 5 | [[Backend/B5 - Testing & Code Quality\|B5 — Testing & Code Quality]] | ✅ Complete | [[Backend/Checkpoints/CB5 - Test Suite Complete\|CB5]] |

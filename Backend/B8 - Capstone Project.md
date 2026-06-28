@@ -1,11 +1,11 @@
 ---
 tags:
-  - DE101
+  - BE101
   - backend-8
   - capstone
 date: 2026-06-28
 status: in-progress
-domain: "8 of 8"
+domain: 8 of 8
 track: backend
 ---
 
