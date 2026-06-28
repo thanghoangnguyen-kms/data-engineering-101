@@ -20,7 +20,7 @@ verified_by: ""
 
 ## ✅ Pass Criteria
 
-- [ ] A slow operation (e.g., sending an email, resizing an image) runs as a background task and returns a 202 immediately
+- [ ] A slow operation (e.g., sending an email, resizing an image) runs as a background task and returns `202 Accepted` or `201 Created` immediately while the task runs in the background
 - [ ] A Celery (or ARQ) worker successfully processes at least one job type from a queue
 - [ ] Architecture diagram drawn showing producer → queue → consumer for a real use case
 - [ ] Periodic scheduled job configured and running (e.g., runs every minute, logs a message)

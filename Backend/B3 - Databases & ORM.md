@@ -238,7 +238,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 # app/models/user.py
 import datetime
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, String, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -254,7 +254,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     credits: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime.datetime] = mapped_column(
-        default=datetime.datetime.utcnow
+        server_default=func.now()
     )
 
     posts: Mapped[list["Post"]] = relationship(
@@ -603,11 +603,15 @@ sequenceDiagram
 
 ```python
 # app/services/user_service.py
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import redis_client
 from app.models.user import User
 from app.schemas.user import UserResponse
+
+logger = logging.getLogger(__name__)
 
 
 class UserService:
@@ -620,7 +624,8 @@ class UserService:
         # 1. Check cache — gracefully skip if Redis is down
         try:
             cached = await redis_client.get(cache_key)
-        except Exception:
+        except Exception as e:
+            logger.warning("Redis unavailable, falling back to DB: %s", e)
             cached = None
 
         if cached:
@@ -650,7 +655,7 @@ class UserService:
         try:
             await redis_client.delete(f"user:{user_id}")
         except Exception:
-            pass
+            pass  # Cache invalidation failure is non-fatal — DB is the source of truth
         return UserResponse.model_validate(user)
 ```
 
@@ -721,7 +726,7 @@ Use `resource:id` — consistent and easy to pattern-match for bulk deletion:
 > ✅ Production caching libraries like [Cashews](https://github.com/Krukov/cashews) provide `lock=True` — coalescing concurrent misses into a single DB query
 
 > [!TIP] Going further
-> [[docs/caching|docs/caching.md]] in this codebase documents the production caching strategy: tag-based invalidation (no Redis `SCAN`), thundering herd protection with request coalescing, distributed locking, and idempotency keys. Everything in this section is the foundation — that document is the next level.
+> The production caching strategy builds on this foundation and includes: tag-based invalidation (no Redis `SCAN`), thundering herd protection with request coalescing, distributed locking, and idempotency keys. See [[docs/caching|docs/caching.md]] for the full implementation reference. The patterns covered in this section are the prerequisite — revisit this after completing B6 and B7.
 
 ---
 
@@ -813,6 +818,9 @@ op.create_index("idx_users_email", "users", ["email"])
 ```
 
 ---
+
+> [!TIP] Advanced — Skip on First Pass
+> Sections 3.6–3.8 cover the Repository Pattern, Unit of Work, and the Mapper/DTO pattern. These are production-grade architectural patterns. **On your first pass through B3, skip these and go straight to the Practice Checklist.** Return here before starting B7 — Clean Architecture in B7 builds directly on these concepts.
 
 ## 3.6 — Repository Pattern
 
@@ -1006,6 +1014,35 @@ class UserService:
         # If commit() raises — BOTH writes are rolled back automatically
 ```
 
+> [!WARNING] Race Condition Without Locking
+> The `transfer_credits` example above is correct for a single concurrent request. Under concurrent load, two transfers could both read `from_user.credits = 100`, both deduct 50, and both commit — resulting in a final balance of 50 instead of 0. This is called a **lost update**.
+>
+> Fix with pessimistic locking (`SELECT ... FOR UPDATE`), which locks the rows for the duration of the transaction:
+>
+> ```python
+> from sqlalchemy import select
+>
+> async def transfer_credits(self, from_user_id: int, to_user_id: int, amount: int) -> None:
+>     # Lock both rows for the duration of this transaction
+>     from_user = await self.session.scalar(
+>         select(User).where(User.id == from_user_id).with_for_update()
+>     )
+>     to_user = await self.session.scalar(
+>         select(User).where(User.id == to_user_id).with_for_update()
+>     )
+>
+>     if from_user is None or to_user is None:
+>         raise ValueError("User not found")
+>     if from_user.credits < amount:
+>         raise ValueError("Insufficient credits")
+>
+>     from_user.credits -= amount
+>     to_user.credits += amount
+>     await self.session.commit()  # locks released on commit
+> ```
+>
+> `with_for_update()` translates to `SELECT ... FOR UPDATE` in PostgreSQL. Any other transaction trying to read these rows will wait until this commit completes. Use for any operation where correctness depends on the value you just read (financial transfers, inventory decrement, seat reservation).
+
 **Wiring into FastAPI**
 
 ```python
@@ -1177,6 +1214,18 @@ class ResponseUserDTO(BaseModel):
 > `UserMapper` handles `User` entities. `OrderMapper` handles `Order` entities. Keep
 > them small and focused — if a mapper is getting complex, that's usually a sign the
 > domain boundary needs rethinking.
+
+---
+
+## 🎯 What You Learned
+
+You can now:
+
+- **Connect FastAPI to PostgreSQL** — async SQLAlchemy engine, session factory, `Depends(get_db)` for per-request sessions, and `asyncpg` as the high-performance driver
+- **Define ORM models and run migrations** — `DeclarativeBase`, `Mapped[T]` typed columns, and Alembic `autogenerate` to version schema changes safely
+- **Cache with Redis** — cache-aside pattern, TTL-based invalidation, write-through vs write-behind trade-offs, and the thundering herd problem
+- **Apply the Repository + Unit of Work pattern** — abstract DB access behind interfaces so services never import SQLAlchemy directly, enabling unit testing with fakes
+- **Prevent data races in concurrent writes** — `SELECT ... FOR UPDATE` for pessimistic locking, and why atomic transactions are not enough under concurrent load
 
 ---
 

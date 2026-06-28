@@ -592,6 +592,18 @@ This makes VS Code:
 
 ---
 
+## 🎯 What You Learned
+
+You can now:
+
+- **Set up a production-grade Python dev environment** — `uv` for dependency management, `pyproject.toml` for project configuration, `.env` for secrets, and `pre-commit` to enforce quality automatically on every commit
+- **Write clean, type-safe Python** — type hints on all functions, `mypy --strict` for static checking, and `Ruff` handling linting + formatting in a single tool
+- **Use Git professionally** — Conventional Commits format, feature branch workflow, and `.gitignore` patterns to keep secrets out of version control
+- **Navigate the Linux command line** — file operations, permissions, environment variables, process management, and the shell patterns you'll use every day in a backend role
+- **Structure a Python project** — packages vs modules, `__init__.py`, relative imports, and the `src/` layout that scales to real projects
+
+---
+
 ## ✅ Practice Checklist
 
 - [ ] Set up a Python virtual environment with `venv` and install packages with `pip`

@@ -146,8 +146,8 @@ from pathlib import Path
 
 
 @pytest.fixture
-def temp_file():
-    path = Path("/tmp/test_data.json")
+def temp_file(tmp_path: Path):
+    path = tmp_path / "test_data.json"
     path.write_text("{}")
     yield path           # test runs here
     path.unlink()        # runs after the test, even if it fails
@@ -676,6 +676,18 @@ mypy app/core/security.py
 # Show error codes (useful for targeted type: ignore comments)
 mypy app/ --show-error-codes
 ```
+
+---
+
+## 🎯 What You Learned
+
+You can now:
+
+- **Write unit tests with pytest** — Arrange/Act/Assert structure, fixtures with appropriate scope, `@pytest.mark.parametrize` for data-driven cases, and `pytest.raises` for error paths
+- **Mock external dependencies cleanly** — `unittest.mock.patch`, `MagicMock`/`AsyncMock`, and FastAPI's `dependency_overrides` to swap real DB sessions and auth for fakes in tests
+- **Measure and enforce coverage** — `pytest --cov` with `fail_under = 80` in `pyproject.toml`, and why 100% coverage does not mean bug-free code
+- **Run static analysis** — `mypy --strict` catches type errors before runtime; `Ruff` enforces code style; `pre-commit` runs both automatically on every commit
+- **Understand the test pyramid** — unit tests for logic (fast, no I/O), integration tests for DB/API contracts (slower, real infrastructure), and why the split matters for CI speed
 
 ---
 

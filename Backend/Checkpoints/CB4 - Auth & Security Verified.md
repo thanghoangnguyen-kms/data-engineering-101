@@ -22,7 +22,7 @@ verified_by: ""
 
 - [ ] API key authentication implemented and tested on a protected endpoint
 - [ ] JWT issued on login, validated on protected routes, and rejected when expired
-- [ ] OAuth 2.0 flow implemented with at least one provider (e.g., GitHub)
+- [ ] Can describe the OAuth 2.0 Authorization Code Flow — client redirect → authorization code → token exchange — and explain what the `state` parameter prevents
 - [ ] CORS configured to whitelist specific origins and reject others
 - [ ] Can explain when to use JWT vs OAuth vs API keys
 - [ ] Can explain what CORS is and why browsers enforce it

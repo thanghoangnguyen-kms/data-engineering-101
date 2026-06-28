@@ -21,7 +21,8 @@ verified_by: ""
 ## ✅ Pass Criteria
 
 - [ ] Python virtual environment created and activated with `venv`
-- [ ] `ruff` and `black` installed and configured in `pyproject.toml`
+- [ ] `uv init`, `uv add`, and `uv run` used successfully to manage a sample project
+- [ ] `ruff` installed and configured in `pyproject.toml` (handles linting + formatting — replaces both flake8 and black)
 - [ ] A Python script with full type annotations passes `mypy --strict` with zero errors
 - [ ] Pre-commit hook runs linter automatically on `git commit`
 - [ ] Project pushed to a GitHub repository with at least 3 meaningful commits

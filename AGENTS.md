@@ -104,7 +104,7 @@ Domain notes are named `B<N> - <Topic>.md` (Backend) or `D<N> - <Topic>.md` (Dat
 ```yaml
 ---
 tags:
-  - DE101
+  - BE101
   - <topic-tag>         # e.g. backend-1, api, fastapi, auth, testing
 date: YYYY-MM-DD
 status: not-started     # not-started | in-progress | complete
@@ -118,7 +118,7 @@ track: backend
 ```yaml
 ---
 tags:
-  - DE101
+  - BE101
   - checkpoint
   - backend
 date: YYYY-MM-DD

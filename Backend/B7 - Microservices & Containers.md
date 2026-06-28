@@ -6,10 +6,10 @@ tags:
   - microservices
 date: 2026-06-27
 status: complete
-domain: 7 of 8
+domain: "7 of 8"
 track: backend
 ---
-4
+
 # B7 — Microservices & Containers
 
 **Back to:** [[Backend/00 - Backend Track Roadmap|Backend Track Roadmap]]
@@ -75,7 +75,7 @@ FROM python:3.11-slim AS builder
 WORKDIR /app
 
 # Copy uv binary from the official image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /usr/local/bin/uv  # pin version for reproducible builds
 
 # Install dependencies into a virtual environment inside /app/.venv
 COPY pyproject.toml uv.lock ./
@@ -389,7 +389,7 @@ event and moves on. The consumer processes it when it can, even if it was tempor
 
 ## 7.4 — gRPC & Inter-Service Communication
 
-> [!NOTE] Building on B2 §2.6
+> [!NOTE] Building on B2 §2.7
 > B2 introduced gRPC as an API style — protocol buffers, HTTP/2, and the REST comparison.
 > Here you will implement actual service-to-service gRPC: defining a `.proto` contract,
 > generating Python stubs, building an async server, and calling it from another FastAPI
@@ -707,6 +707,9 @@ async def health() -> dict[str, str]:
 
 ---
 
+> [!TIP] Advanced — Preview for B8
+> Section 7.6 introduces the full Clean Architecture model, IoC containers with `dependency-injector`, and uv workspace monorepos. This is a preview of the patterns you will implement fully in B8. **On your first pass through B7, you may skim this section** — focus on Docker, Docker Compose, and gRPC first. Return here when starting B8.
+
 ## 7.6 — Production Codebase Architecture
 
 > [!IMPORTANT] How Real Backends Are Structured
@@ -715,8 +718,7 @@ async def health() -> dict[str, str]:
 > FastAPI, SQLAlchemy, Redis, and every other framework. This makes it testable, portable,
 > and maintainable as the codebase grows.
 >
-> For the full platform specification with annotated production examples, see:
-> [[docs/clean-architecture|Clean Architecture reference]]
+> The directory tree and code examples below serve as the full platform specification with annotated production examples. See [[docs/clean-architecture|Clean Architecture reference]] for the extended implementation guide.
 
 ### The 4-Layer Model
 
@@ -980,6 +982,18 @@ uv add --package order-service httpx
 > [!TIP] Start with a single-package repository. Add a shared package only when two
 > services genuinely need the same code — don't create `shared-schemas` speculatively.
 > Premature sharing creates an invisible coupling between services.
+
+---
+
+## 🎯 What You Learned
+
+You can now:
+
+- **Containerise a FastAPI service** — multi-stage Dockerfile with pinned base images, non-root user, `.dockerignore`, and `COPY --from` to install `uv` without bloating the final image
+- **Orchestrate multi-service environments with Docker Compose** — `depends_on` with health checks, named volumes for DB persistence, `env_file` for secrets, and a shared network for service-to-service DNS
+- **Design microservice boundaries** — when to split vs. keep together, the API Gateway pattern, service discovery, and the trade-offs of inter-service HTTP vs. event-driven communication
+- **Call services via gRPC** — define a `.proto` contract, generate Python stubs with `grpcio-tools`, implement an async server, and call it from a FastAPI route with `grpc.aio`
+- **Structure a production codebase with Clean Architecture** — 4-layer model (controller / orchestration / domain / infrastructure), the dependency direction rule, and `dependency-injector` for IoC container wiring
 
 ---
 

@@ -5,7 +5,7 @@ tags:
   - capstone
 date: 2026-06-28
 status: complete
-domain: 8 of 8
+domain: "8 of 8"
 track: backend
 ---
 
@@ -21,6 +21,19 @@ track: backend
 > pick any domain you care about. This is your portfolio piece.
 
 ---
+
+> [!IMPORTANT] Before You Start — Pre-flight Checklist
+> Complete all of these before beginning Milestone 1. Debugging infrastructure during active development wastes hours.
+>
+> - [ ] Docker Desktop is running (`docker info` returns without error)
+> - [ ] Ports `5433` (PostgreSQL), `6379` (Redis), and `5672`/`5671` (Azure Service Bus Emulator) are free — check with `lsof -i :<port>` on macOS/Linux
+> - [ ] You have a GitHub repo created and the initial commit pushed
+> - [ ] `uv` is installed (`uv --version` returns a version string)
+> - [ ] Your `.env` file is created from `.env.example` and all required values are filled in
+> - [ ] `docker compose up -d` starts all containers without errors (`docker compose ps` shows all services healthy)
+> - [ ] You can connect to the database: `docker exec -it <postgres-container> psql -U postgres`
+>
+> Once all boxes are checked, you are ready for Milestone 1.
 
 ## 8.1 — Project Specification
 
@@ -145,8 +158,6 @@ Copy this to your project root and replace service names, DB names, and topic na
 with your own:
 
 ```yaml
-version: '3.8'
-
 services:
   # ─── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
@@ -631,7 +642,7 @@ entity → repository interface → domain logic
 # service_a/domain/order/entities/order.py
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 
 @dataclass
 class Order:
@@ -639,7 +650,7 @@ class Order:
     total: float
     status: str = "pending"
     id: UUID = field(default_factory=uuid4)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 ```
 
 **Repository interface** — domain defines the contract, infrastructure fulfils it:
@@ -906,6 +917,9 @@ if __name__ == "__main__":
 
 **Unit test pattern** — mock all dependencies, test one unit at a time:
 
+> [!NOTE] Removing Boilerplate with `asyncio_mode`
+> These tests use `@pytest.mark.asyncio`. In production projects (as covered in B5), add `asyncio_mode = "auto"` to `[tool.pytest.ini_options]` in `pyproject.toml` to avoid this decorator on every async test.
+
 ```python
 # tests/unit/orchestration/test_order_service.py
 from unittest.mock import AsyncMock
@@ -996,6 +1010,18 @@ Present this checklist to your mentor when you're ready for CB8 sign-off:
 - [ ] APIs start cleanly with `uv run uvicorn`
 - [ ] README covers setup, architecture diagram, and API docs links
 - [ ] Intern can explain their architecture decisions in a 10-minute walkthrough
+
+---
+
+## 🎯 What You Learned
+
+You have now built a production-structured backend from scratch. You can:
+
+- **Architect a multi-service system** — two FastAPI services with Clean Architecture layers (controller / orchestration / domain / infrastructure), each independently deployable and testable
+- **Implement the full auth lifecycle** — registration, login, JWT access + refresh tokens, and role-based route guards across service boundaries
+- **Integrate async event-driven messaging** — publish domain events to Azure Service Bus on write operations, consume them in a dedicated worker, and handle retries and dead-letter scenarios
+- **Write a meaningful test suite** — unit tests with fakes (no real DB or queue), `dependency_overrides` for FastAPI, and `pytest --cov` showing ≥ 70% coverage
+- **Operate the system end-to-end** — `docker compose up` for infra, `uv run` for APIs, structured logs for debugging, and a clean `README.md` a teammate could follow from scratch
 
 ---
 

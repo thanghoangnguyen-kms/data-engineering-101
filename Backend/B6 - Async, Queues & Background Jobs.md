@@ -169,6 +169,47 @@ The client receives `201 Created` immediately. `send_welcome_email` runs afterwa
 > [!WARNING] BackgroundTasks Fails Silently
 > If `send_welcome_email` raises an unhandled exception, FastAPI logs the error but **the caller receives no indication of failure** — the 201 response was already sent. Never use `BackgroundTasks` for work where silent failure is unacceptable (sending critical emails, charging payments, writing to external systems).
 
+**When to use `202 Accepted`**
+
+`201 Created` is correct when you create a resource synchronously. `202 Accepted` signals: *"I received your request and queued it — I'll process it eventually."* Use `202` when the work is deferred and the resource may not exist yet.
+
+```python
+from fastapi import APIRouter, BackgroundTasks
+from pydantic import BaseModel
+
+router = APIRouter()
+
+
+class ReportRequest(BaseModel):
+    report_type: str
+    user_id: int
+
+
+async def generate_report(report_type: str, user_id: int) -> None:
+    # Long-running: fetch data, render PDF, upload to storage
+    await asyncio.sleep(5)
+    print(f"Report {report_type} for user {user_id} complete")
+
+
+@router.post("/reports", status_code=202)
+async def request_report(
+    body: ReportRequest,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    background_tasks.add_task(generate_report, body.report_type, body.user_id)
+    return {"message": "Report queued. You will be notified when ready."}
+```
+
+The client receives `202 Accepted` immediately. Report generation runs in the background. Compare this to a hypothetical synchronous version that would block for 5 seconds.
+
+> [!TIP] HTTP Status Semantics
+> | Status | Meaning | Use when |
+> |--------|---------|----------|
+> | `200 OK` | Request processed, result in body | Synchronous GET, synchronous update |
+> | `201 Created` | Resource created, `Location` header optional | POST that creates a DB record |
+> | `202 Accepted` | Request queued for async processing | Background job, async pipeline |
+> | `204 No Content` | Success, no body | DELETE, update with no return value |
+
 **Limitations — when to graduate to a real task queue**
 
 | Concern | `BackgroundTasks` | Real task queue (ARQ) |
@@ -337,6 +378,9 @@ arq app.worker.WorkerSettings
 > ```
 > ARQ retries up to 5 times by default.
 
+> [!NOTE] ARQ Has No Built-in Dead-Letter Queue
+> After a job exhausts its `max_tries`, ARQ logs the failure and drops the job — there is no automatic dead-letter queue (DLQ). If you need failed jobs preserved for later inspection or replay, use a cloud queue (Azure Service Bus, AWS SQS) or Celery with a configured DLQ. For most intern-level projects, logging the error in the `on_job_abort` hook is sufficient.
+
 > [!TIP] Job Deduplication with `_job_id`
 > To prevent the same job from being enqueued twice (e.g., don't send two welcome emails to the same user), pass a stable `_job_id`. If a job with that ID is already queued or running, `enqueue_job` returns `None` silently:
 > ```python
@@ -422,7 +466,7 @@ class WorkerSettings:
     functions = [send_welcome_email]
     cron_jobs = [
         cron(purge_expired_tokens, hour=3, minute=0),          # 3:00 AM daily
-        cron(send_weekly_digest, weekday=0, hour=9, minute=0), # Monday 9:00 AM
+        cron(send_weekly_digest, weekday=0, hour=9, minute=0), # Monday 9:00 AM (ARQ uses Python's Monday=0 convention)
     ]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
 ```
@@ -444,6 +488,18 @@ If you're not using ARQ, `APScheduler` v3 can run a scheduler directly inside th
 
 > [!WARNING] In-Process Schedulers Are Not Production-Critical
 > APScheduler runs inside your FastAPI process. If the server crashes or restarts mid-schedule, the job may not run. For schedules that **must not be missed** (billing jobs, compliance reports), use an external orchestrator — Azure Data Factory (covered in [[DataEngineering/D6 - Cloud & Orchestration|D6]]) or a dedicated cron service.
+
+---
+
+## 🎯 What You Learned
+
+You can now:
+
+- **Distinguish concurrency from parallelism** — Python's event loop is concurrent (single thread, cooperative switching) not parallel; `async def` and `await` are the tools for I/O-bound concurrency
+- **Offload work with FastAPI `BackgroundTasks`** — return `202 Accepted` immediately while slow work (emails, reports) runs after the response; understand its silent-failure limitation
+- **Build reliable task queues with ARQ** — enqueue jobs with `_job_id` for deduplication, configure `max_tries` + `retry_on` for automatic retry, and schedule recurring work with `cron()`
+- **Choose the right async tool** — `BackgroundTasks` for simple fire-and-forget, ARQ for retry/durability, Redis pub/sub or Azure Service Bus for cross-service event-driven flows
+- **Understand message queue concepts** — fan-out vs point-to-point, delivery guarantees (at-most-once vs at-least-once), and when to reach for RabbitMQ, NATS, or Kafka
 
 ---
 

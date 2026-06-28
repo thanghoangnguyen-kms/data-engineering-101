@@ -251,30 +251,36 @@ async def delete_user(user_id: int) -> None:
 > [!EXAMPLE] Full Working App
 > ```python
 > from fastapi import FastAPI, HTTPException
-> from pydantic import BaseModel
+> from pydantic import BaseModel, EmailStr
 >
 > app = FastAPI()
-> users: dict[int, dict] = {}
 > next_id = 1
 >
 > class UserCreate(BaseModel):
 >     name: str
+>     email: EmailStr
+>
+> class UserResponse(BaseModel):
+>     id: int
+>     name: str
 >     email: str
 >
+> users: dict[int, UserResponse] = {}
+>
 > @app.get("/users")
-> async def list_users() -> list:
+> async def list_users() -> list[UserResponse]:
 >     return list(users.values())
 >
 > @app.get("/users/{user_id}")
-> async def get_user(user_id: int) -> dict:
+> async def get_user(user_id: int) -> UserResponse:
 >     if user_id not in users:
 >         raise HTTPException(status_code=404, detail="User not found")
 >     return users[user_id]
 >
 > @app.post("/users", status_code=201)
-> async def create_user(data: UserCreate) -> dict:
+> async def create_user(data: UserCreate) -> UserResponse:
 >     global next_id
->     user = {"id": next_id, "name": data.name, "email": data.email}
+>     user = UserResponse(id=next_id, name=data.name, email=data.email)
 >     users[next_id] = user
 >     next_id += 1
 >     return user
@@ -289,7 +295,7 @@ async def delete_user(user_id: int) -> None:
 
 ---
 
-## 2.2.5 — Project Structure & APIRouter
+## 2.3 — Project Structure & APIRouter
 
 > [!NOTE]
 > Every real FastAPI project splits routes across multiple files. FastAPI's `APIRouter` is the tool for this — it works like a mini-app that you mount onto the main `FastAPI()` instance.
@@ -375,7 +381,7 @@ app.add_middleware(
 > [!TIP] CORS errors appear in the browser, not in FastAPI logs
 > If your browser console shows `Access-Control-Allow-Origin` errors but your API logs look fine — it's a CORS issue. Add `CORSMiddleware` as shown above.
 
-## 2.3 — Pydantic Schemas & Validation
+## 2.4 — Pydantic Schemas & Validation
 
 > [!NOTE]
 > Pydantic models define the shape of your request and response data. FastAPI uses them to automatically validate incoming data, serialize outgoing data, and generate OpenAPI docs.
@@ -397,14 +403,17 @@ class UserCreate(BaseModel):
 **Defining a `BaseModel`**
 
 ```python
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 class UserCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    email: str = Field(pattern=r"^[^@]+@[^@]+\.[^@]+$")
+    email: EmailStr
     age: int = Field(gt=0, lt=150)
     role: str = Field(default="viewer")
 ```
+
+> [!TIP] Use `EmailStr` instead of manual regex
+> `EmailStr` (from `pydantic`) validates the format and lowercases the value automatically — no manual regex needed.
 
 FastAPI returns `422` automatically if any constraint is violated.
 
@@ -472,7 +481,7 @@ async def create_user(data: UserCreate) -> UserResponse:
 > ✅ Always define a `UserResponse` listing only what clients should see
 > FastAPI's `response_model=` filters the output automatically
 
-## 2.4 — Error Handling & Status Codes
+## 2.5 — Error Handling & Status Codes
 
 > [!NOTE]
 > Consistent, structured error responses make your API predictable. Clients shouldn't receive raw Python exceptions or HTML error pages.
@@ -530,7 +539,7 @@ Now you can `raise UserNotFoundError(42)` anywhere in your service layer — it 
 > ✅ Use `@app.exception_handler(Exception)` to catch all unhandled errors
 > ✅ Log the full error internally; return `{"detail": "Internal server error"}` to the client
 
-## 2.5 — Dependency Injection with `Depends()`
+## 2.6 — Dependency Injection with `Depends()`
 
 > [!NOTE]
 > FastAPI's `Depends()` solves a common problem: how do route handlers get access to shared resources (DB sessions, config, current user) without relying on global state?
@@ -609,7 +618,7 @@ async def profile(user: User = Depends(get_current_user)) -> dict:
     return {"name": user.name}  # FastAPI resolves the full chain automatically
 ```
 
-## 2.6 — gRPC as an API Style
+## 2.7 — gRPC as an API Style
 
 > [!NOTE]
 > gRPC is an alternative to REST for API communication. Where REST uses JSON over HTTP/1.1, gRPC uses **Protocol Buffers** (binary format) over **HTTP/2**. It's faster and stricter, but requires more setup.
@@ -655,7 +664,7 @@ Run `protoc` to generate Python client and server stubs from this file. Both sid
 > [!NOTE] Scope for this track
 > REST is the primary focus. gRPC is here for awareness — you'll encounter it in production microservice systems. Service communication patterns are explored further in [[Backend/B7 - Microservices & Containers|B7]].
 
-## 2.7 — Protecting Routes with Dependencies
+## 2.8 — Protecting Routes with Dependencies
 
 > [!NOTE] Scope
 > This section covers using `Depends()` to guard routes (e.g., require a logged-in user). JWT internals and OAuth 2.0 flows are covered in [[Backend/B4 - Authentication & Security|B4]].
@@ -732,7 +741,7 @@ sequenceDiagram
 > [!TIP] Order matters
 > Check authentication before authorization. A common mistake is returning `403` when the token is simply missing — the correct code is `401`.
 
-## 2.8 — OpenAPI & API Documentation
+## 2.9 — OpenAPI & API Documentation
 
 > [!NOTE]
 > FastAPI generates interactive API documentation automatically from your route decorators, Pydantic models, and type hints. No extra configuration needed.
@@ -794,6 +803,18 @@ app = FastAPI(
 
 > [!TIP] Use Tags to Organize Large APIs
 > As routes grow, `tags=["users"]` in each router keeps `/docs` navigable. Routes without tags pile into a generic "default" group and become hard to find.
+
+---
+
+## 🎯 What You Learned
+
+You can now:
+
+- **Build REST APIs with FastAPI** — route handlers, path/query parameters, request bodies via Pydantic, status codes, and `HTTPException` for error responses
+- **Validate request data automatically** — Pydantic `BaseModel` schemas with `EmailStr`, `Field` constraints, and `field_validator` catch bad input before your logic runs
+- **Organise a real FastAPI project** — `APIRouter` splits routes by resource, `Depends()` injects shared logic (DB sessions, auth checks), and the yield pattern handles teardown cleanly
+- **Design a clean API contract** — explicit `response_model` schemas define exactly what gets serialised, preventing internal fields from leaking to callers
+- **Work with OpenAPI docs** — FastAPI generates `/docs` and `/redoc` automatically; every schema and example you add shows up there
 
 ---
 

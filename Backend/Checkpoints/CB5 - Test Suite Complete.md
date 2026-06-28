@@ -21,8 +21,7 @@ verified_by: ""
 ## ✅ Pass Criteria
 
 - [ ] Unit tests written for at least 3 service-layer functions with all external dependencies mocked
-- [ ] Integration test runs against a real test database (not the production database)
+- [ ] Can explain the difference between unit tests (no I/O, use fakes) and integration tests (real DB/network) and describe how Docker Compose enables integration testing (covered hands-on in B7)
 - [ ] End-to-end test uses FastAPI `TestClient` to test at least one full request/response cycle
 - [ ] `pytest --cov` report shows ≥80% line coverage
 - [ ] `mypy` runs with zero errors on the entire project
-- [ ] Can explain the difference between a unit test and an integration test

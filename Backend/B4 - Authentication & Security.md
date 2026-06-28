@@ -283,12 +283,12 @@ class Settings(BaseSettings):
 
 ```python
 # app/schemas/auth.py
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8, description="Minimum 8 characters")
 
 
 class LoginRequest(BaseModel):
@@ -299,6 +299,11 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class RegisterResponse(BaseModel):
+    id: int
+    email: str
 ```
 
 **User model — required fields**
@@ -366,26 +371,31 @@ def decode_access_token(token: str) -> dict:
 # app/routers/auth.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
+from app.schemas.auth import LoginRequest, RegisterRequest, RegisterResponse, TokenResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/register", status_code=201)
+@router.post("/register", status_code=201, response_model=RegisterResponse)
 async def register(
     body: RegisterRequest,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> RegisterResponse:
     user = User(email=body.email, hashed_password=hash_password(body.password))
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Email already registered")
     await db.refresh(user)
-    return {"id": user.id, "email": user.email}
+    return RegisterResponse(id=user.id, email=user.email)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -458,6 +468,87 @@ An access token is short-lived (15–60 minutes) so a stolen token expires quick
 > ❌ Weak or hardcoded secret key — brute-forceable offline
 > ❌ Using `python-jose` — unmaintained since 2022; use `PyJWT` instead
 > ✅ Short expiry (30 min), strong random secret, payload contains only `sub` + `role` + `exp`
+
+**Refresh Tokens**
+
+Access tokens are short-lived (15–60 minutes) to limit damage from theft. A **refresh token** is a long-lived credential (7–30 days) stored securely by the client. When the access token expires, the client exchanges the refresh token for a new access token — without asking the user to log in again.
+
+```python
+# app/core/security.py — add refresh token support (alongside existing functions)
+# ... existing imports ...
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+
+def create_access_token(data: dict) -> str:
+    payload = data.copy()
+    payload["exp"] = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.access_token_expire_minutes
+    )
+    payload["type"] = "access"
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+
+
+def create_refresh_token(data: dict) -> str:
+    expires = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    return jwt.encode(
+        {**data, "exp": expires, "type": "refresh"},
+        settings.secret_key,
+        algorithm=settings.algorithm,
+    )
+```
+
+Update `TokenResponse` and `login` to return both tokens:
+
+```python
+# app/schemas/auth.py
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+```
+
+```python
+# app/routers/auth.py — update login endpoint
+@router.post("/login", response_model=TokenResponse)
+async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    user = await db.scalar(select(User).where(User.email == body.email))
+    if not user or not verify_password(body.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    payload = {"sub": str(user.id), "role": user.role}
+    return TokenResponse(
+        access_token=create_access_token(payload),
+        refresh_token=create_refresh_token(payload),
+    )
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(body: RefreshRequest) -> TokenResponse:
+    try:
+        payload = jwt.decode(body.refresh_token, settings.secret_key, algorithms=[settings.algorithm])
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired — please log in again")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    data = {"sub": payload["sub"], "role": payload["role"]}
+    return TokenResponse(
+        access_token=create_access_token(data),
+        refresh_token=create_refresh_token(data),   # rotate refresh token on each use
+    )
+```
+
+> [!TIP] Rotate Refresh Tokens
+> The example above issues a **new refresh token on every refresh**. This is called refresh token rotation — if a stolen refresh token is used, the legitimate user's next refresh will fail (the old token is already spent), alerting you to a potential breach. Store refresh tokens server-side (Redis or DB) for full revocation support.
+
+> [!WARNING] Where to Store Refresh Tokens (Frontend)
+> - ✅ `HttpOnly` cookie — not accessible to JavaScript, safe from XSS
+> - ❌ `localStorage` — readable by any JavaScript on the page; vulnerable to XSS
+> - ❌ In-memory JS variable — lost on page refresh; forces re-login on every tab close
 
 ---
 
@@ -642,7 +733,7 @@ Browser ──HTTPS──▶ nginx (TLS termination) ──HTTP──▶ FastAPI
                    └── handles handshake
 ```
 
-nginx manages the certificate and encryption. FastAPI only sees plain HTTP internally. The hands-on Docker Compose setup for nginx + Let's Encrypt is covered in [[Backend/B7 - Microservices & Containers|B7]].
+nginx manages the certificate and encryption. FastAPI only sees plain HTTP internally. For hands-on setup, see the [nginx docs](https://nginx.org/en/docs/) and [Let's Encrypt getting started guide](https://letsencrypt.org/getting-started/).
 
 **Security Headers**
 
@@ -692,6 +783,18 @@ The OWASP Top 10 is the industry-standard list of critical web security risks. F
 > ❌ `allow_origins=["*"]` in production — any site can call your API as your users
 > ❌ No HTTPS in staging — security bugs only surface in production, where they cost the most
 > ✅ bcrypt for passwords, strong random secrets, explicit CORS origins, HTTPS from day one
+
+---
+
+## 🎯 What You Learned
+
+You can now:
+
+- **Implement API key and JWT authentication** — hash API keys with SHA-256, issue JWTs with `PyJWT`, decode and validate tokens in a `Depends()` guard, and rotate refresh tokens to limit exposure
+- **Hash and verify passwords securely** — `bcrypt` via `passlib` with automatic salt and work factor; never store or compare plaintext passwords
+- **Guard routes by role** — `get_current_user` dependency chain that decodes the JWT and enforces `role == "admin"` before the handler runs
+- **Understand OAuth 2.0** — the Authorization Code Flow, what each step exchanges, and what the `state` parameter prevents (CSRF on the redirect)
+- **Apply HTTPS and security headers** — TLS termination at the reverse proxy, HSTS, `X-Content-Type-Options`, `X-Frame-Options`, and the OWASP Top 10 threats to design against
 
 ---
 
