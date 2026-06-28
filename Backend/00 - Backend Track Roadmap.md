@@ -25,7 +25,7 @@ track: backend
 | 1 | [[Backend/B1 - Foundations & Dev Setup\|B1 — Foundations & Dev Setup]] | ✅ Complete | [[Backend/Checkpoints/CB1 - Dev Environment Ready\|CB1]] |
 | 2 | [[Backend/B2 - Web & API Design\|B2 — Web & API Design]] | ✅ Complete | [[Backend/Checkpoints/CB2 - API Built & Documented\|CB2]] |
 | 3 | [[Backend/B3 - Databases & ORM\|B3 — Databases & ORM]] | ✅ Complete | [[Backend/Checkpoints/CB3 - DB & ORM Proficiency\|CB3]] |
-| 4 | [[Backend/B4 - Authentication & Security\|B4 — Authentication & Security]] | 🔴 Not started | [[Backend/Checkpoints/CB4 - Auth & Security Verified\|CB4]] |
+| 4 | [[Backend/B4 - Authentication & Security\|B4 — Authentication & Security]] | ✅ Complete | [[Backend/Checkpoints/CB4 - Auth & Security Verified\|CB4]] |
 | 5 | [[Backend/B5 - Testing & Code Quality\|B5 — Testing & Code Quality]] | 🔴 Not started | [[Backend/Checkpoints/CB5 - Test Suite Complete\|CB5]] |
 | 6 | [[Backend/B6 - Async, Queues & Background Jobs\|B6 — Async, Queues & Background Jobs]] | 🔴 Not started | [[Backend/Checkpoints/CB6 - Queue & Workers Running\|CB6]] |
 | 7 | [[Backend/B7 - Microservices & Containers\|B7 — Microservices & Containers]] | 🔴 Not started | [[Backend/Checkpoints/CB7 - Service Containerised\|CB7]] |
