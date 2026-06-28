@@ -20,10 +20,15 @@ verified_by: ""
 
 ## ✅ Pass Criteria
 
-- [ ] GitHub repo is public with a clear README and setup instructions
-- [ ] REST API runs locally with `docker compose up` — no manual setup needed
-- [ ] All 5+ endpoints work and are documented at `/docs`
-- [ ] Authentication is implemented and tested (protected routes reject unauthenticated requests)
-- [ ] At least one background job processes asynchronously (verified by logs)
-- [ ] `pytest --cov` shows ≥80% coverage
+- [ ] GitHub repository with conventional commits and clean commit history
+- [ ] 2 services, each with ≥ 3 CRUD endpoints
+- [ ] JWT auth — all write endpoints return `401 Unauthorized` without a valid token
+- [ ] PostgreSQL schema per service with Alembic migrations applied
+- [ ] Event published on write in Service A → consumed and persisted in Service B
+- [ ] Event handlers are idempotent (re-running the same event produces the same result)
+- [ ] Unit tests pass for both services (`pytest tests/unit`)
+- [ ] `ruff` and `mypy` exit clean on both services
+- [ ] `docker compose up -d` starts all infra + workers with no errors
+- [ ] APIs start cleanly with `uv run uvicorn`
+- [ ] README covers setup, architecture diagram, and API docs links
 - [ ] Intern can explain their architecture decisions in a 10-minute walkthrough
