@@ -4,7 +4,7 @@ tags:
   - backend-8
   - capstone
 date: 2026-06-28
-status: in-progress
+status: complete
 domain: 8 of 8
 track: backend
 ---

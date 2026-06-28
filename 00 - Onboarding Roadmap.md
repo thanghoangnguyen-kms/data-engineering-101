@@ -42,8 +42,8 @@ status: in-progress
 | 4   | [[Backend/B4 - Authentication & Security\|B4 — Authentication & Security]]             | ✅ Complete      | [[Backend/Checkpoints/CB4 - Auth & Security Verified\|CB4]] |
 | 5   | [[Backend/B5 - Testing & Code Quality\|B5 — Testing & Code Quality]]                   | ✅ Complete      | [[Backend/Checkpoints/CB5 - Test Suite Complete\|CB5]]      |
 | 6   | [[Backend/B6 - Async, Queues & Background Jobs\|B6 — Async, Queues & Background Jobs]] | ✅ Complete      | [[Backend/Checkpoints/CB6 - Queue & Workers Running\|CB6]]  |
-| 7   | [[Backend/B7 - Microservices & Containers\|B7 — Microservices & Containers]]           | 🟡 In progress  | [[Backend/Checkpoints/CB7 - Service Containerised\|CB7]]    |
-| 8   | [[Backend/B8 - Capstone Project\|B8 — Capstone Project]]                               | 🟡 In progress  | [[Backend/Checkpoints/CB8 - Capstone Complete\|CB8]]        |
+| 7   | [[Backend/B7 - Microservices & Containers\|B7 — Microservices & Containers]]           | ✅ Complete     | [[Backend/Checkpoints/CB7 - Service Containerised\|CB7]]    |
+| 8   | [[Backend/B8 - Capstone Project\|B8 — Capstone Project]]                               | ✅ Complete     | [[Backend/Checkpoints/CB8 - Capstone Complete\|CB8]]        |
 
 ### 🗄️ Data Engineering Track
 
