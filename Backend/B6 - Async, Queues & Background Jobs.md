@@ -347,6 +347,10 @@ arq app.worker.WorkerSettings
 
 `Celery` is the most widely used Python task queue — you'll encounter it in most existing Python backends. It has a richer ecosystem (beat scheduler, Flower monitoring, multiple broker support) but uses synchronous workers by default and requires more configuration. ARQ is simpler for async-native FastAPI projects. Celery docs: https://docs.celeryq.dev
 
+> [!TIP] How This Looks in Production
+> The platform's production task queue uses **Azure Service Bus queues** instead of Redis + ARQ. The pattern is the same — producer enqueues a command, a dedicated worker processes it — but with Azure-native delivery guarantees, exponential backoff retry (2s → 4s → 8s), and a `CommandRouter` pattern that mirrors FastAPI's decorator style.
+> See [[docs/command-queue|Command-Queue Architecture]] for the full production implementation.
+
 ---
 
 ## 6.4 — Message Queues: RabbitMQ, NATS, Kafka (Conceptual)
@@ -382,6 +386,10 @@ A task queue is point-to-point: one producer, one worker per job. A message queu
 
 > [!NOTE] What to Learn First
 > Choose a broker based on your team's existing stack. In most intern-level backend roles, you'll encounter RabbitMQ or Redis pub/sub before Kafka. Kafka is a data engineering tool as much as a backend one — if your team uses it, read [[DataEngineering/D5 - Stream Processing|D5]] alongside this section.
+
+> [!TIP] How This Looks in Production
+> The platform uses **Azure Service Bus Topics** for event-driven communication between services. Each service publishes events (e.g., `document.created`) and subscribes to events from other services via an `EventRouter` — a decorator pattern that looks similar to FastAPI routes. Resilience patterns (idempotency service, circuit breaker, dead-letter handling) are built in.
+> See [[docs/event-driven|Event-Driven Architecture]] for the full production implementation.
 
 ---
 
@@ -463,6 +471,8 @@ If you're not using ARQ, `APScheduler` v3 can run a scheduler directly inside th
 | https://kafka.apache.org/documentation/ | Kafka docs |
 | https://apscheduler.readthedocs.io/en/3.x/ | APScheduler v3 — scheduler reference |
 | https://fastapi.tiangolo.com/tutorial/background-tasks/ | FastAPI BackgroundTasks docs |
+| [[docs/command-queue\|Command-Queue Architecture]] | Production task queue — Azure Service Bus + CommandRouter pattern |
+| [[docs/event-driven\|Event-Driven Architecture]] | Production message queue — Azure Service Bus Topics + EventRouter pattern |
 
 ## 🃏 Quick-Reference Flash Cards
 
