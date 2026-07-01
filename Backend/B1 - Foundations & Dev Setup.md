@@ -592,6 +592,190 @@ This makes VS Code:
 
 ---
 
+## 1.8 — SOLID Principles
+
+> [!NOTE] What is SOLID?
+> SOLID is five design principles that make code easier to understand, test, and change. They were named by Robert C. Martin and appear constantly in professional Python codebases. You don't need to memorise the acronym — you need to recognise the problems each principle prevents. You will see all five applied across B2–B7: `Depends()` in B2, repository interfaces in B3, fake implementations in B5, and the full Clean Architecture wiring in B7.
+
+The principles are introduced here in the order you'll encounter them in this track, not alphabetically.
+
+---
+
+### D — Dependency Inversion Principle
+
+> [!IMPORTANT] The Most Important One for Backend Work
+> High-level modules (your business logic) should not depend on low-level modules (SQLAlchemy, Redis, HTTP clients). Both should depend on **abstractions** — abstract interfaces that the low-level modules implement.
+
+This is what enables FastAPI's `Depends()`, repository interfaces in B3, and the IoC container in B7. It's worth understanding first.
+
+```python
+# ❌ UserService depends on SQLAlchemy directly — can't test without a real database
+from sqlalchemy.ext.asyncio import AsyncSession
+
+class UserService:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def get_user(self, user_id: int) -> User | None:
+        return await self.db.get(User, user_id)  # tied to SQLAlchemy forever
+
+
+# ✅ UserService depends on an abstract interface — SQLAlchemy is a swappable detail
+from abc import ABC, abstractmethod
+
+class IUserRepository(ABC):
+    @abstractmethod
+    async def get_by_id(self, user_id: int) -> User | None: ...
+
+class UserService:
+    def __init__(self, user_repo: IUserRepository) -> None:
+        self._repo = user_repo  # any implementation works — real DB, in-memory fake, mock
+
+    async def get_user(self, user_id: int) -> User | None:
+        return await self._repo.get_by_id(user_id)
+```
+
+In tests (B5), you pass a fake `IUserRepository`. In production, you pass the SQLAlchemy one. `UserService` never changes.
+
+---
+
+### S — Single Responsibility Principle
+
+One class, one reason to change. If your `UserService` also handles authentication and sends emails, three unrelated reasons can force you to touch the same file.
+
+```python
+# ❌ One service doing three jobs — auth, user management, and email
+class UserService:
+    async def create_user(self, data: UserCreate) -> User: ...
+    async def login(self, email: str, password: str) -> str: ...      # auth concern
+    async def send_welcome_email(self, user: User) -> None: ...       # email concern
+
+
+# ✅ Each service owns exactly one concern
+class UserService:
+    async def create_user(self, data: UserCreate) -> User: ...
+
+class AuthService:
+    async def login(self, email: str, password: str) -> str: ...
+
+class EmailService:
+    async def send_welcome_email(self, user: User) -> None: ...
+```
+
+> [!TIP]
+> In Clean Architecture (B7), SRP maps directly to the layer model: controllers handle HTTP, orchestration services coordinate use cases, domain logic holds business rules, infrastructure handles persistence. One layer, one responsibility.
+
+---
+
+### O — Open/Closed Principle
+
+Classes should be **open for extension** (new behaviour via new classes) but **closed for modification** (existing code untouched). Adding a new notification channel should not require editing existing code.
+
+```python
+# ❌ Every new channel means editing this function — risks breaking existing channels
+def send_notification(user: User, channel: str) -> None:
+    if channel == "email":
+        send_email(user.email)
+    elif channel == "sms":
+        send_sms(user.phone)
+    # adding "push" means opening this file again
+
+
+# ✅ New channels are new classes — the function never changes
+from abc import ABC, abstractmethod
+
+class NotificationChannel(ABC):
+    @abstractmethod
+    async def send(self, user: User, message: str) -> None: ...
+
+class EmailChannel(NotificationChannel):
+    async def send(self, user: User, message: str) -> None:
+        await send_email(user.email, message)
+
+class SMSChannel(NotificationChannel):
+    async def send(self, user: User, message: str) -> None:
+        await send_sms(user.phone, message)
+
+# Adding push notifications = new PushChannel class. Zero existing code touched.
+```
+
+---
+
+### I — Interface Segregation Principle
+
+No class should be forced to implement methods it doesn't use. Split fat interfaces into small, focused ones.
+
+```python
+# ❌ Every implementor must handle export_to_csv — even a simple in-memory fake
+class IUserRepository(ABC):
+    @abstractmethod
+    async def get_by_id(self, user_id: int) -> User | None: ...
+    @abstractmethod
+    async def save(self, user: User) -> User: ...
+    @abstractmethod
+    async def delete(self, user_id: int) -> None: ...
+    @abstractmethod
+    async def export_all_to_csv(self) -> bytes: ...  # unrelated to most use cases
+
+
+# ✅ Focused interfaces — each class implements only what it needs
+class IUserReader(ABC):
+    @abstractmethod
+    async def get_by_id(self, user_id: int) -> User | None: ...
+
+class IUserWriter(ABC):
+    @abstractmethod
+    async def save(self, user: User) -> User: ...
+    @abstractmethod
+    async def delete(self, user_id: int) -> None: ...
+```
+
+> [!TIP]
+> You'll see this applied in B3: each repository interface is scoped to one entity. `IUserRepository` does not carry post or order operations.
+
+---
+
+### L — Liskov Substitution Principle
+
+Any subtype must work wherever its parent type is expected — without breaking the caller. If a subclass raises `NotImplementedError` on a method the parent defines, it violates the contract.
+
+```python
+# ❌ ReadOnlyRepository claims to be an IUserRepository but breaks on save()
+class IUserRepository(ABC):
+    @abstractmethod
+    async def save(self, user: User) -> User: ...
+
+class ReadOnlyRepository(IUserRepository):
+    async def save(self, user: User) -> User:
+        raise NotImplementedError("This repo is read-only")  # caller doesn't know this
+
+
+# ✅ Don't inherit from a contract you can't honour — use a narrower interface instead
+class IUserReader(ABC):
+    @abstractmethod
+    async def get_by_id(self, user_id: int) -> User | None: ...
+
+class ReadOnlyRepository(IUserReader):  # only promises reads — no save() to violate
+    async def get_by_id(self, user_id: int) -> User | None: ...
+```
+
+> [!TIP]
+> LSP becomes practical in B5 (testing): your fake `InMemoryUserRepository` must honour every method signature of `IUserRepository` — otherwise the tests using it don't reflect real behaviour.
+
+---
+
+### SOLID at a Glance
+
+| Principle | Rule in One Line | Where You'll See It |
+|-----------|-----------------|---------------------|
+| **D** — Dependency Inversion | Depend on abstractions, not concretions | `Depends()` in B2 · `IUserRepository` in B3 · IoC container in B7 |
+| **S** — Single Responsibility | One class, one reason to change | Service split in B3 · Layer model in B7 |
+| **O** — Open/Closed | Extend by adding classes, not editing existing ones | New channel handlers in B6 · New repository implementations in B3 |
+| **I** — Interface Segregation | Small, focused interfaces over fat ones | `IUserReader` / `IUserWriter` in B3 |
+| **L** — Liskov Substitution | Subtypes honour the parent contract | Fake repositories in B5 tests |
+
+---
+
 ## 🎯 What You Learned
 
 You can now:
@@ -615,6 +799,8 @@ You can now:
 - [ ] Push a project to GitHub following the feature branch workflow (branch → commit → PR)
 - [ ] Create an `app/` package with correct `__init__.py` files and import across modules without errors
 - [ ] Install the recommended VS Code extensions and confirm format-on-save works
+- [ ] Look at the `UserService` example in section 1.1 — identify which SOLID principle `db` being passed into `__init__` (instead of created inside the class) demonstrates
+- [ ] Name which SOLID principle FastAPI's `Depends()` system enforces and write one sentence explaining why
 
 ## 📚 Domain References
 
@@ -662,6 +848,21 @@ You can now:
 
 **Q:** Why should `.vscode/settings.json` be committed?
 **A:** It sets project-specific formatter and type checker config. Committing it ensures all team members get the same settings automatically.
+
+**Q:** What does the Single Responsibility Principle say?
+**A:** A class should have one reason to change — it does one thing. If your `UserService` also handles auth and sends email, split it into three classes.
+
+**Q:** What does the Open/Closed Principle say?
+**A:** Classes should be open for extension (new behaviour via new classes) but closed for modification (existing code untouched). Add a new notification channel by creating `PushChannel`, not by editing `send_notification()`.
+
+**Q:** What does the Liskov Substitution Principle say?
+**A:** Any subtype must work wherever the parent type is expected without breaking the caller. If `ReadOnlyRepository` raises on `save()`, it violates the `IUserRepository` contract.
+
+**Q:** What does the Interface Segregation Principle say?
+**A:** Don't force classes to implement methods they don't use. Split fat interfaces into focused ones — `IUserReader` and `IUserWriter` instead of one interface with 8 unrelated methods.
+
+**Q:** What does the Dependency Inversion Principle say?
+**A:** High-level modules should depend on abstractions, not concretions. `UserService` should accept `IUserRepository`, not `AsyncSession`. This is what makes `Depends()`, repository interfaces in B3, and the IoC container in B7 all work.
 
 *Checkpoint: [[Backend/Checkpoints/CB1 - Dev Environment Ready|CB1]]*
 

@@ -822,6 +822,11 @@ op.create_index("idx_users_email", "users", ["email"])
 > [!TIP] Advanced — Skip on First Pass
 > Sections 3.6–3.8 cover the Repository Pattern, Unit of Work, and the Mapper/DTO pattern. These are production-grade architectural patterns. **On your first pass through B3, skip these and go straight to the Practice Checklist.** Return here before starting B7 — Clean Architecture in B7 builds directly on these concepts.
 
+> [!NOTE] Pattern Vocabulary
+> The three sections below have names because they solve recurring problems with known solutions. **Repository Pattern** and **Unit of Work** come from Martin Fowler's *Patterns of Enterprise Application Architecture* (PoEAA). **Mapper/DTO** is a structural pattern for moving data safely across layer boundaries without coupling layers together.
+>
+> Naming matters in practice: when a senior engineer says "put that behind a repository" or "wrap those two writes in a unit of work", they mean exactly what you'll build here. If you completed [[Backend/B1 - Foundations & Dev Setup|B1 §1.8]], you'll recognise these as direct applications of the **Single Responsibility** and **Dependency Inversion** principles — the abstractions that make the full [[Backend/B7 - Microservices & Containers|B7 Clean Architecture]] possible.
+
 ## 3.6 — Repository Pattern
 
 > [!IMPORTANT] Why this pattern matters
