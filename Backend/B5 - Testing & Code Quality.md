@@ -351,12 +351,20 @@ def test_admin_delete_succeeds_for_admin(client_as_admin: TestClient) -> None:
 
 **The Test Pyramid**
 
-```
-        ▲ e2e (fewest — full stack, slowest, most brittle)
-       ███
-      ███████  integration (fewer — app + real DB, medium speed)
-     ███████████
-    ███████████████  unit (most — isolated, fast, high coverage)
+```mermaid
+flowchart TB
+    E2E["End-to-End — fewest<br/>full stack, slowest, most brittle"]
+    INT["Integration — fewer<br/>app + real DB, medium speed"]
+    UNIT["Unit — most<br/>isolated, fast, high coverage"]
+
+    E2E --- INT --- UNIT
+
+    classDef top fill:#ffc9c9,stroke:#e03131,color:#1f2937;
+    classDef mid fill:#ffec99,stroke:#f08c00,color:#1f2937;
+    classDef base fill:#b2f2bb,stroke:#2f9e44,color:#1f2937;
+    class E2E top
+    class INT mid
+    class UNIT base
 ```
 
 Run units constantly during development. Run integration tests before merging. Run e2e tests on the full build.
@@ -527,13 +535,19 @@ Because `fail_under` is in `pyproject.toml`, the CI job inherits it without any 
 
 Enforcement happens in layers, from fastest to slowest:
 
-```
-pre-commit (on every git commit)
-    └── ruff check --fix        ← lint + auto-fix
-    └── ruff format             ← formatting
-    └── mypy app/               ← type check
-CI (on every push / PR)
-    └── pytest --cov            ← all tests + coverage gate
+```mermaid
+flowchart LR
+    Dev([git commit]) --> PC{"pre-commit<br/>ruff + mypy"}
+    PC -->|fail| Fix[fix locally]
+    Fix --> Dev
+    PC -->|pass| Push([git push / PR])
+    Push --> CI{"CI<br/>pytest --cov ≥ 80%"}
+    CI -->|fail| Block[merge blocked]
+    Block --> Fix
+    CI -->|pass| Merge([merge allowed])
+
+    classDef gate fill:#e7f5ff,stroke:#1971c2,color:#1f2937;
+    class PC,CI gate
 ```
 
 pre-commit gives fast local feedback. CI is the authoritative gate that blocks bad merges. The `pre-commit` setup is in [[Backend/B1 - Foundations & Dev Setup|B1]] — B5 just adds `mypy` and `pytest -x` to the hook list:

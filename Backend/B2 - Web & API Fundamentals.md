@@ -539,7 +539,93 @@ Now you can `raise UserNotFoundError(42)` anywhere in your service layer — it 
 > ✅ Use `@app.exception_handler(Exception)` to catch all unhandled errors
 > ✅ Log the full error internally; return `{"detail": "Internal server error"}` to the client
 
-## 2.6 — Dependency Injection with `Depends()`
+## 2.6 — Logging
+
+> [!NOTE]
+> You cannot attach a debugger to a running production server. **Logs are how you see what your server actually did** — which requests came in, what failed, and why. Getting logging right early is one of the highest-leverage habits in backend work.
+
+**`print()` vs the `logging` module**
+
+`print()` seems easier, but it has no severity, no timestamp, no source, and can't be turned off or redirected. Real applications use Python's built-in `logging` module.
+
+> [!WARNING] Don't debug with `print()`
+> ❌ `print("user created", user.id)` — no level, no timestamp, floods stdout, can't be filtered
+> ✅ `logger.info("user created: id=%s", user.id)` — leveled, timestamped, filterable, routable
+
+Configure logging once at startup, then get a **per-module logger** everywhere else:
+
+```python
+# app/main.py — configure once, at startup
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s | %(message)s",
+)
+```
+
+```python
+# any module — get a logger named after the module
+import logging
+
+logger = logging.getLogger(__name__)
+
+logger.info("service started")
+```
+
+`__name__` makes the logger name match the module path (`app.routers.users`), so every line tells you where it came from.
+
+**Log levels — and when to use each**
+
+| Level | Use for | Example |
+|-------|---------|---------|
+| `DEBUG` | Detailed developer diagnostics; off in production | Variable values, query params |
+| `INFO` | Normal, expected events worth recording | "user 42 registered", "job completed" |
+| `WARNING` | Something unexpected but handled | Cache miss fallback, retry triggered |
+| `ERROR` | An operation failed | Failed DB write, unhandled request |
+| `CRITICAL` | The app itself can't continue | Can't connect to DB at startup |
+
+Setting `level=logging.INFO` means `DEBUG` lines are silently dropped — flip to `DEBUG` locally when investigating, keep `INFO` in production.
+
+> [!WARNING] Never log secrets or personal data
+> ❌ `logger.info("login: %s / %s", email, password)` — passwords, tokens, and full card/ID numbers must never reach logs
+> ✅ Log a **user id** or a **hashed/masked** value instead — logs are often shipped to third-party systems and retained for months
+
+**Structured logging (how production does it)**
+
+Prose logs are fine for humans reading a terminal, but production log systems (Datadog, CloudWatch, Loki) need **machine-parsable JSON** so you can search `user_id=42` across millions of lines. The common tool is `structlog`:
+
+```python
+import structlog
+
+logger = structlog.get_logger()
+
+logger.info("user_registered", user_id=user.id, email_domain=domain)
+# → {"event": "user_registered", "user_id": 42, "email_domain": "example.com", "level": "info", "timestamp": "..."}
+```
+
+You don't need to set this up now — just understand *why* real backends emit JSON logs with key–value fields instead of formatted sentences.
+
+> [!TIP] Correlation IDs — following one request through the logs
+> Under load, log lines from hundreds of concurrent requests interleave. Production APIs attach a **correlation ID** (a unique id per request, set by middleware) to every log line, so you can filter the full story of a single request. You'll see this wired up in [[Backend/B7 - Microservices & Containers|B7]] and used in the [[Backend/B8 - Capstone Project|B8 capstone]] (`correlation_id`).
+
+**Closing the loop with §2.5**
+
+Remember the error-handling rule: *log the full error internally, return a generic message to the client.* `logger.exception()` does exactly this — it logs at `ERROR` **with the full traceback**, and must be called from inside an `except` block or exception handler:
+
+```python
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+```
+
+The client sees `{"detail": "Internal server error"}`; you get the full stack trace in your logs.
+
+## 2.7 — Dependency Injection with `Depends()`
 
 > [!NOTE]
 > FastAPI's `Depends()` solves a common problem: how do route handlers get access to shared resources (DB sessions, config, current user) without relying on global state?
@@ -618,7 +704,7 @@ async def profile(user: User = Depends(get_current_user)) -> dict:
     return {"name": user.name}  # FastAPI resolves the full chain automatically
 ```
 
-## 2.7 — gRPC as an API Style
+## 2.8 — gRPC as an API Style
 
 > [!NOTE]
 > gRPC is an alternative to REST for API communication. Where REST uses JSON over HTTP/1.1, gRPC uses **Protocol Buffers** (binary format) over **HTTP/2**. It's faster and stricter, but requires more setup.
@@ -664,7 +750,7 @@ Run `protoc` to generate Python client and server stubs from this file. Both sid
 > [!NOTE] Scope for this track
 > REST is the primary focus. gRPC is here for awareness — you'll encounter it in production microservice systems. Service communication patterns are explored further in [[Backend/B7 - Microservices & Containers|B7]].
 
-## 2.8 — Protecting Routes with Dependencies
+## 2.9 — Protecting Routes with Dependencies
 
 > [!NOTE] Scope
 > This section covers using `Depends()` to guard routes (e.g., require a logged-in user). JWT internals and OAuth 2.0 flows are covered in [[Backend/B4 - Authentication & Security|B4]].
@@ -741,7 +827,7 @@ sequenceDiagram
 > [!TIP] Order matters
 > Check authentication before authorization. A common mistake is returning `403` when the token is simply missing — the correct code is `401`.
 
-## 2.9 — OpenAPI & API Documentation
+## 2.10 — OpenAPI & API Documentation
 
 > [!NOTE]
 > FastAPI generates interactive API documentation automatically from your route decorators, Pydantic models, and type hints. No extra configuration needed.
@@ -814,6 +900,7 @@ You can now:
 - **Validate request data automatically** — Pydantic `BaseModel` schemas with `EmailStr`, `Field` constraints, and `field_validator` catch bad input before your logic runs
 - **Organise a real FastAPI project** — `APIRouter` splits routes by resource, `Depends()` injects shared logic (DB sessions, auth checks), and the yield pattern handles teardown cleanly
 - **Design a clean API contract** — explicit `response_model` schemas define exactly what gets serialised, preventing internal fields from leaking to callers
+- **Log like a production service** — Python's `logging` module (never `print()`), severity levels, `logger.exception()` in error handlers, and why real backends emit structured JSON logs
 - **Work with OpenAPI docs** — FastAPI generates `/docs` and `/redoc` automatically; every schema and example you add shows up there
 
 ---
@@ -824,6 +911,7 @@ You can now:
 - [ ] Write both `async def` and `def` handlers and explain when each is appropriate
 - [ ] Define a Pydantic model with validation constraints
 - [ ] Return structured error responses with correct HTTP status codes
+- [ ] Replace a `print()` with a module-level logger and emit INFO and ERROR events at the correct severity
 - [ ] Use `Depends()` to inject a dependency (e.g., a shared config or DB session) into a route
 - [ ] Add a route guard that rejects unauthenticated requests using `Depends()`
 - [ ] View and navigate the auto-generated `/docs` OpenAPI UI
@@ -866,6 +954,9 @@ You can now:
 
 **Q:** What's the difference between 401 and 403?
 **A:** `401` — no valid identity (missing/invalid token). `403` — valid identity but insufficient permissions. Always check authentication before authorization.
+
+**Q:** Why use `logger.exception()` instead of `logger.error()` inside an `except` block?
+**A:** It logs at ERROR level *and* automatically includes the full stack trace, so you can debug the failure straight from the logs.
 
 **Q:** How does FastAPI generate `/docs`?
 **A:** Automatically from route decorators, `response_model`, Pydantic schemas, and `summary`/`description`/`tags` parameters.

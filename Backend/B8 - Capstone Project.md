@@ -86,7 +86,7 @@ my-platform/
 │   │   ├── service_a/               ← Python package (underscores, not hyphens)
 │   │   │   ├── main.py
 │   │   │   ├── worker.py
-│   │   │   ├── ioc.py
+│   │   │   ├── deps.py
 │   │   │   ├── settings.py
 │   │   │   ├── controller/
 │   │   │   │   ├── api/
@@ -356,24 +356,40 @@ uv run uvicorn service_b.main:app --reload --port 8001
 
 ### System Overview
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Local (uv run)                                                  │
-│                                                                  │
-│  service-a :8000  ──── REST call ────▶  service-b :8001          │
-│       │                                      │                   │
-│       │ publish event                        │ publish event     │
-└───────┼──────────────────────────────────────┼───────────────────┘
-        │                                      │
-        ▼                                      ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Docker Compose                                                  │
-│                                                                  │
-│  postgres  │  redis  │  sqledge + servicebus-emulator            │
-│                                                                  │
-│  service-a-worker  ◀──  service-b-events / service-a-subscription│
-│  service-b-worker  ◀──  service-a-events / service-b-subscription│
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Client([Client])
+
+    subgraph SA["service-a :8000"]
+        API_A["FastAPI REST"]
+        WrkA["service-a worker"]
+        DBA[("Postgres A")]
+    end
+
+    subgraph SB["service-b :8001"]
+        API_B["FastAPI REST"]
+        WrkB["service-b worker"]
+        DBB[("Postgres B")]
+    end
+
+    TA{{"topic: service-a-events"}}
+    TB{{"topic: service-b-events"}}
+
+    Client -->|REST| API_A
+    Client -->|REST| API_B
+    API_A --> DBA
+    API_B --> DBB
+    API_A -->|publish| TA
+    API_B -->|publish| TB
+    TA -->|subscription| WrkB
+    TB -->|subscription| WrkA
+    WrkB --> DBB
+    WrkA --> DBA
+
+    classDef store fill:#fff3bf,stroke:#f08c00,color:#1f2937;
+    class DBA,DBB store
+    classDef topic fill:#e5dbff,stroke:#7048e8,color:#1f2937;
+    class TA,TB topic
 ```
 
 Each API publishes events to its own Service Bus topic. Each worker subscribes to the
@@ -403,38 +419,56 @@ These four patterns appear throughout the codebase. They were introduced in
 | **Repository**          | `domain/interfaces/` + `infrastructure/repositories/` | Abstracts DB access; domain depends on the interface, not SQLAlchemy |
 | **Unit of Work**        | `orchestration/`                                  | Wraps a transaction; collects domain events to publish on commit      |
 | **Mapper**              | `orchestration/{context}/`                        | Converts entities ↔ DTOs; keeps SQLAlchemy models out of routes       |
-| **Dependency Injection**| `ioc.py`                                          | Wires all dependencies; routes receive services, not raw DB sessions  |
+| **Dependency Injection**| `deps.py`                                          | Wires all dependencies; routes receive services, not raw DB sessions  |
 
-The **Unit of Work + Transactional Outbox** combination is the critical one for Milestone 5:
-the UoW commits the DB write *and* publishes the event atomically — so you never get
-a DB write without an event, or an event without a DB write.
+The **Unit of Work** commits the DB write, then publishes the event — a pattern called
+**publish-after-commit**:
 
 ```python
 async with UnitOfWork(self._session_factory) as uow:
     await self._order_repo.save(order, session=uow.session)
     uow.add_event("order.created", {"order_id": str(order.id)})
-    # On exit: commits to DB + publishes to Service Bus atomically
+    # On exit: commits to the DB first, THEN publishes to Service Bus
 ```
+
+This is *not* cross-system atomic: the database and Service Bus are separate systems, so if
+the process crashes in the gap between commit and publish, the event is lost. That rare case
+is acceptable for the capstone — and the far more common case, a *duplicate* delivery, is
+already handled by the idempotent consumer below.
+
+> [!TIP] Advanced — Transactional Outbox
+> To close that crash window in production, you write the event into an **`outbox` table in
+> the same DB transaction** as the business write (so they commit together, atomically), and a
+> separate relay process polls the table and publishes unsent rows to Service Bus. This
+> guarantees every committed write eventually produces an event — the production-grade version
+> of publish-after-commit. See [[docs/event-driven|the Event-Driven Architecture reference]].
+> **Not required for the capstone.**
 
 ### Event Flow — Step by Step
 
-```
-1. HTTP request hits service-a route  (controller/api/v1/)
-         │
-2. Route calls {Context}Service       (orchestration/{context}/)
-         │
-3. Service persists entity via UnitOfWork → registers domain event
-         │
-4. On commit → infrastructure/messaging/ → publishes to Service Bus topic
-         │
-         └─── [async, decoupled] ──▶  service-b-worker receives message
-                                              │
-                                      5. controller/events/v1/ handler fires
-                                              │
-                                      6. Handler calls its own {Context}Service
-                                              │
-                                      7. Returns True  → acknowledge (message removed)
-                                             Returns False → abandon (retry / dead-letter)
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as service-a (REST)
+    participant DA as Postgres A
+    participant SB as Service Bus topic
+    participant W as service-b worker
+    participant DB as Postgres B
+
+    C->>A: HTTP request (JWT)
+    A->>DA: persist entity (Unit of Work)
+    DA-->>A: committed
+    A->>SB: publish event (after commit)
+    A-->>C: 201 Created
+    Note over A,SB: publish-after-commit — not cross-system atomic
+
+    SB->>W: deliver message (at-least-once)
+    W->>DB: process event (idempotent)
+    alt handler returns True
+        W-->>SB: acknowledge (message removed)
+    else returns False / crash
+        W-->>SB: abandon → retry / dead-letter
+    end
 ```
 
 > [!IMPORTANT] Event handlers must be idempotent
@@ -574,7 +608,6 @@ uv add --package service-a \
     fastapi "uvicorn[standard]" \
     sqlalchemy asyncpg alembic \
     pydantic-settings \
-    dependency-injector \
     PyJWT "passlib[bcrypt]" \
     azure-servicebus
 
@@ -588,7 +621,6 @@ uv add --package service-b \
     fastapi "uvicorn[standard]" \
     sqlalchemy asyncpg alembic \
     pydantic-settings \
-    dependency-injector \
     PyJWT "passlib[bcrypt]" \
     azure-servicebus
 
@@ -633,7 +665,7 @@ Create `local/servicebus/Config.json`, `.env.example`, and `docker-compose.yml` 
 entity → repository interface → domain logic
 → SQLAlchemy model → repository implementation
 → request/response DTOs → mapper → orchestration service
-→ IoC wiring (ioc.py) → FastAPI routes → Alembic migration
+→ dependency wiring (deps.py) → FastAPI routes → Alembic migration
 ```
 
 **Entity** — pure Python, no framework imports:

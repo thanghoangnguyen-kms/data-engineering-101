@@ -88,7 +88,7 @@ app/
 │   └── user.py              ← Pydantic request/response schemas
 ├── repositories/
 │   ├── __init__.py
-│   └── user_repository.py   ← Repository pattern (section 3.6)
+│   └── user_repository.py   ← Repository pattern (section 3.7)
 ├── services/
 │   ├── __init__.py
 │   └── user_service.py      ← Business logic + caching (section 3.4)
@@ -817,17 +817,91 @@ In Alembic, the same operation goes in a migration:
 op.create_index("idx_users_email", "users", ["email"])
 ```
 
+## 3.6 — Pagination
+
+> [!NOTE]
+> A `GET /users` that returns **every** row works fine with 10 users and takes down your API with 10 million. Pagination means returning results in bounded pages. This builds directly on §3.5 — an unbounded query is slow to run, huge to serialize, and can exhaust memory on both server and client.
+
+**Offset/limit pagination**
+
+The simplest approach: `LIMIT` caps how many rows come back, `OFFSET` skips ahead to later pages. Expose them as validated query parameters:
+
+```python
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+router = APIRouter()
+
+@router.get("/users")
+async def list_users(
+    limit: int = Query(20, ge=1, le=100),   # cap the page size — never unbounded
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    stmt = select(User).order_by(User.id).limit(limit).offset(offset)
+    result = await db.execute(stmt)
+    users = result.scalars().all()
+
+    total = await db.scalar(select(func.count()).select_from(User))
+    return {"items": users, "total": total, "limit": limit, "offset": offset}
+```
+
+Two rules newcomers get wrong:
+
+> [!IMPORTANT] Always cap the page size and always order
+> - **Cap `limit`** with `le=100`. Without it, a client can request `limit=10000000` and defeat the whole point.
+> - **Always `order_by`** a stable column. Without an explicit order, PostgreSQL may return rows in *different orders* across pages, so the same row can appear on page 1 and page 2 — or be skipped entirely.
+
+Returning `total` lets clients render "Page 3 of 20", but note it costs a **second query** (`COUNT(*)`). Skip it if you don't need a page count.
+
+**Offset gets slow on large tables**
+
+> [!WARNING] Deep offsets don't scale
+> `OFFSET 100000 LIMIT 20` still makes PostgreSQL scan and **throw away** the first 100,000 rows before returning 20. Offset pagination is fine for admin screens and small tables, but degrades badly deep into a large one.
+> ❌ Page-number navigation on a 50-million-row table
+> ✅ Keyset pagination (below) for large datasets and infinite scroll
+
+**Keyset (cursor) pagination**
+
+Instead of counting from the start, remember the **last item you saw** and ask for rows after it. Because it filters on an indexed column, it stays fast at any depth:
+
+```python
+@router.get("/users")
+async def list_users(
+    after_id: int | None = Query(None),      # the cursor: last id from the previous page
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    stmt = select(User).order_by(User.id).limit(limit)
+    if after_id is not None:
+        stmt = stmt.where(User.id > after_id)   # uses the index on id — no rows scanned-and-discarded
+
+    users = (await db.execute(stmt)).scalars().all()
+    next_cursor = users[-1].id if users else None
+    return {"items": users, "next_cursor": next_cursor}
+```
+
+The client passes `next_cursor` back as `after_id` to fetch the next page. This requires ordering on a **stable, indexed column** (ties directly to the indexing you saw in §3.5).
+
+| | Offset/limit | Keyset/cursor |
+|---|---|---|
+| **How** | Skip N rows, take M | Filter `WHERE key > last_seen`, take M |
+| **Jump to page 7?** | Yes | No — only next/previous |
+| **Speed on large tables** | Degrades with depth | Constant, index-backed |
+| **Best for** | Admin UIs, small tables, page numbers | Large tables, APIs, infinite scroll |
+
 ---
 
 > [!TIP] Advanced — Skip on First Pass
-> Sections 3.6–3.8 cover the Repository Pattern, Unit of Work, and the Mapper/DTO pattern. These are production-grade architectural patterns. **On your first pass through B3, skip these and go straight to the Practice Checklist.** Return here before starting B7 — Clean Architecture in B7 builds directly on these concepts.
+> Sections 3.7–3.9 cover the Repository Pattern, Unit of Work, and the Mapper/DTO pattern. These are production-grade architectural patterns. **On your first pass through B3, skip these and go straight to the Practice Checklist.** Return here before starting B7 — Clean Architecture in B7 builds directly on these concepts.
 
 > [!NOTE] Pattern Vocabulary
 > The three sections below have names because they solve recurring problems with known solutions. **Repository Pattern** and **Unit of Work** come from Martin Fowler's *Patterns of Enterprise Application Architecture* (PoEAA). **Mapper/DTO** is a structural pattern for moving data safely across layer boundaries without coupling layers together.
 >
 > Naming matters in practice: when a senior engineer says "put that behind a repository" or "wrap those two writes in a unit of work", they mean exactly what you'll build here. If you completed [[Backend/B1 - Foundations & Dev Setup|B1 §1.8]], you'll recognise these as direct applications of the **Single Responsibility** and **Dependency Inversion** principles — the abstractions that make the full [[Backend/B7 - Microservices & Containers|B7 Clean Architecture]] possible.
 
-## 3.6 — Repository Pattern
+## 3.7 — Repository Pattern
 
 > [!IMPORTANT] Why this pattern matters
 > The Repository Pattern separates your data access logic from your business logic. You define an abstract interface in the domain layer and a concrete SQLAlchemy implementation in the infrastructure layer — so your business logic never depends on the database directly. This is the foundation of Clean Architecture in [[Backend/B7 - Microservices & Containers|B7]].
@@ -915,7 +989,7 @@ class SQLAlchemyUserRepository(AbstractUserRepository):
 ```
 
 > [!IMPORTANT] `flush()` vs `commit()` in the repository
-> `flush()` sends the SQL to the database and populates generated IDs, but **does not commit** — the transaction stays open. `commit()` is the Unit of Work's responsibility (section 3.7). The repository operates within a transaction; it does not own one.
+> `flush()` sends the SQL to the database and populates generated IDs, but **does not commit** — the transaction stays open. `commit()` is the Unit of Work's responsibility (section 3.8). The repository operates within a transaction; it does not own one.
 
 **How this enables testing**
 
@@ -952,7 +1026,7 @@ class FakeUserRepository(AbstractUserRepository):
 
 ---
 
-## 3.7 — Unit of Work Pattern
+## 3.8 — Unit of Work Pattern
 
 > [!IMPORTANT] Transactions as a unit
 > The Unit of Work pattern groups multiple repository operations into a single database transaction. If any step fails, the whole unit rolls back. In SQLAlchemy 2.0 async, this maps directly to the `AsyncSession` lifecycle.
@@ -1093,7 +1167,7 @@ HTTP layer       business logic           data access        transaction boundar
 
 ---
 
-## 3.8 — Mapper Pattern
+## 3.9 — Mapper Pattern
 
 > [!NOTE]
 > The **Mapper Pattern** converts data between layers so each layer speaks its own language.
@@ -1231,6 +1305,7 @@ You can now:
 - **Cache with Redis** — cache-aside pattern, TTL-based invalidation, write-through vs write-behind trade-offs, and the thundering herd problem
 - **Apply the Repository + Unit of Work pattern** — abstract DB access behind interfaces so services never import SQLAlchemy directly, enabling unit testing with fakes
 - **Prevent data races in concurrent writes** — `SELECT ... FOR UPDATE` for pessimistic locking, and why atomic transactions are not enough under concurrent load
+- **Paginate large result sets** — offset/limit with a capped page size, and keyset (cursor) pagination that stays fast on large tables and infinite scroll
 
 ---
 
@@ -1245,6 +1320,7 @@ You can now:
 - [ ] Implement cache-aside in a `UserService`: first `GET` hits the DB and caches the result; second `GET` returns from Redis without a DB query
 - [ ] Delete the Redis cache key after an update operation to prevent stale data
 - [ ] Configure `pool_size`, `max_overflow`, and `pool_pre_ping` on the engine
+- [ ] Add offset/limit pagination with a capped page size to a list endpoint, then rewrite it as keyset pagination
 - [ ] Implement `AbstractUserRepository` and `SQLAlchemyUserRepository` with fully typed method signatures
 - [ ] Wrap two repository operations in a single `AsyncSession` transaction and verify that a failure in the second rolls back the first
 - [ ] Create a `UserMapper` with `to_entity()` and `to_response_dto()` static methods and use it in a service so no SQLAlchemy model is returned from a route
@@ -1278,6 +1354,9 @@ You can now:
 
 **Q:** What does `pool_pre_ping=True` do?
 **A:** Before using a connection from the pool, SQLAlchemy sends `SELECT 1`. If the connection is dead (e.g., after a Docker restart), it discards it and creates a fresh one.
+
+**Q:** Why does `OFFSET 100000` get slow on a large table, and what fixes it?
+**A:** The database still scans and discards all 100,000 skipped rows before returning the page. Keyset pagination (`WHERE id > :last_seen`) filters on an indexed column and stays fast at any depth.
 
 **Q:** What is the Repository Pattern?
 **A:** An abstraction between business logic and the database. An abstract class defines the operations; a concrete class implements them with SQLAlchemy. Business logic calls the interface — never the DB directly.

@@ -224,6 +224,25 @@ volumes:
 
 ### Key Concepts
 
+The compose file wires three services on one private network, with a named volume for the database:
+
+```mermaid
+flowchart LR
+    subgraph net["Compose private network"]
+        API["api<br/>FastAPI :8000"]
+        PG[("postgres :5432")]
+        RD[("redis :6379")]
+    end
+    VOL[("named volume<br/>postgres_data")]
+
+    API -->|"depends_on: service_healthy"| PG
+    API --> RD
+    PG --- VOL
+
+    classDef svc fill:#e7f5ff,stroke:#1971c2,color:#1f2937;
+    class API,PG,RD svc
+```
+
 **Named volumes** (`postgres_data`) persist data across container restarts. Without a
 named volume, all PostgreSQL data is lost every time the container stops.
 
@@ -389,196 +408,58 @@ event and moves on. The consumer processes it when it can, even if it was tempor
 
 ## 7.4 — gRPC & Inter-Service Communication
 
-> [!NOTE] Building on B2 §2.7
-> B2 introduced gRPC as an API style — protocol buffers, HTTP/2, and the REST comparison.
-> Here you will implement actual service-to-service gRPC: defining a `.proto` contract,
-> generating Python stubs, building an async server, and calling it from another FastAPI
-> service.
+> [!NOTE] Building on B2 §2.8
+> B2 showed the `.proto` contract and a REST-vs-gRPC feature comparison. This section explains *why* gRPC exists, how a call actually happens, and when to reach for it instead of REST or a queue. You won't build a gRPC service in this track — the inter-service pattern you implement hands-on is async messaging (B6 and B8).
 
-### Why gRPC for Internal Calls
+### Why gRPC Exists
 
-When `order-service` needs to fetch user details from `user-service`, gRPC is often the
-right choice for internal calls:
+REST with JSON is the right default for APIs — but it was designed for a browser talking to a server it doesn't control. Internal service-to-service calls are a different problem: both sides are *your own code*, calling each other constantly, at high volume.
 
-- **Strict contract** — both sides agree on the exact message structure (the `.proto` file)
-- **Binary serialisation** — Protobuf is 3–10× smaller and faster to parse than JSON
-- **HTTP/2** — multiplexed connections, no head-of-line blocking
-- **Auto-generated clients** — run `protoc` once, get a typed client stub
+Google built gRPC for exactly that case, by dropping the assumptions REST doesn't need internally:
 
-### Step 1 — Define the `.proto` Contract
+- **Nobody's reading the wire format in a terminal** → binary (Protobuf) beats JSON on size and parse speed.
+- **Nobody's calling it from a browser** → HTTP/2 multiplexing (many calls share one connection instead of queueing) beats HTTP/1.1, no compatibility trade-off to make.
+- **Both sides deploy from the same contract** → a `.proto` file enforced at *compile time* beats an optional, easy-to-drift OpenAPI spec.
 
-The `.proto` file is the contract between services. Both sides generate code from the
-same file — mismatches are caught at compile time, not at runtime.
+That trade — give up human-readability and universal compatibility, gain speed and a compile-time-checked contract — is the whole reason gRPC exists.
 
-```protobuf
-// proto/user_service.proto
-syntax = "proto3";
+### How a Call Happens
 
-package user;
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant Proto as .proto contract
+    participant Server
+    participant Client
 
-service UserService {
-  // Unary RPC: one request, one response
-  rpc GetUser (GetUserRequest) returns (UserResponse);
+    Note over Dev,Proto: Build time — once, before any calls
+    Dev->>Proto: define the contract once
+    Proto->>Server: protoc generates server base class
+    Proto->>Client: protoc generates typed client stub
 
-  // Server-streaming RPC: one request, stream of responses
-  rpc ListUsers (ListUsersRequest) returns (stream UserResponse);
-}
-
-message GetUserRequest {
-  string user_id = 1;
-}
-
-message ListUsersRequest {
-  int32 page_size = 1;
-}
-
-message UserResponse {
-  string user_id = 1;
-  string email   = 2;
-  string full_name = 3;
-}
+    Note over Client,Server: Runtime — every request
+    Client->>Server: GetUser(user_id) over HTTP/2
+    Server-->>Client: UserResponse (binary Protobuf)
 ```
 
-### Step 2 — Generate Python Stubs
+Both the server and the client are generated from the **same file** — if one side changes a field, the other side's build breaks instead of failing silently at runtime.
 
-```bash
-uv add grpcio grpcio-tools
-```
+> [!NOTE] Recognise it, don't build it
+> Running `protoc` and wiring up the generated server/client is toolchain setup that's out of scope here. Follow the [gRPC Python docs](https://grpc.io/docs/languages/python/) when a real project needs it — the goal in this track is to recognise the pattern and know when to reach for it.
 
-```bash
-python -m grpc_tools.protoc \
-  -I./proto \
-  --python_out=./src/generated \
-  --grpc_python_out=./src/generated \
-  ./proto/user_service.proto
-```
+### gRPC vs REST — Trade-offs for Internal Calls
 
-This creates two generated files — never edit them by hand:
-- `user_service_pb2.py` — message classes (`GetUserRequest`, `UserResponse`, …)
-- `user_service_pb2_grpc.py` — server base class and client stub
-
-Create an `__init__.py` so Python treats the directory as a package:
-
-```bash
-touch src/generated/__init__.py
-```
-
-> [!WARNING] Fix the Generated Import
-> The generated `user_service_pb2_grpc.py` uses a bare import that breaks in Python 3:
-> ```python
-> import user_service_pb2          # ❌ bare import — raises ModuleNotFoundError
-> from . import user_service_pb2   # ✅ relative import — use this instead
-> ```
-> Open `src/generated/user_service_pb2_grpc.py` and change that line by hand after each
-> `protoc` run. If you find this tedious, the
-> [`betterproto`](https://github.com/danielgtaylor/python-betterproto) generator plugin
-> produces correct Python 3 output with type annotations automatically.
-
-### Step 3 — Implement the gRPC Server
-
-```python
-# src/grpc_server.py
-import grpc
-
-from src.generated import user_service_pb2, user_service_pb2_grpc
-from src.domain.interfaces.user_repo import UserRepository
-
-
-class UserServiceServicer(user_service_pb2_grpc.UserServiceServicer):
-    def __init__(self, user_repo: UserRepository) -> None:
-        self._repo = user_repo
-
-    async def GetUser(
-        self,
-        request: user_service_pb2.GetUserRequest,
-        context: grpc.aio.ServicerContext,
-    ) -> user_service_pb2.UserResponse:
-        user = await self._repo.get_by_id(request.user_id)
-        if user is None:
-            await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
-        return user_service_pb2.UserResponse(
-            user_id=str(user.id),
-            email=user.email,
-            full_name=user.full_name,
-        )
-
-    async def ListUsers(
-        self,
-        request: user_service_pb2.ListUsersRequest,
-        context: grpc.aio.ServicerContext,
-    ):
-        async for user in self._repo.stream_all(page_size=request.page_size):
-            yield user_service_pb2.UserResponse(
-                user_id=str(user.id),
-                email=user.email,
-                full_name=user.full_name,
-            )
-
-
-async def serve(user_repo: UserRepository) -> None:
-    server = grpc.aio.server()
-    user_service_pb2_grpc.add_UserServiceServicer_to_server(
-        UserServiceServicer(user_repo), server
-    )
-    server.add_insecure_port("[::]:50051")
-    await server.start()
-    await server.wait_for_termination()
-```
-
-### Step 4 — Call gRPC from Another FastAPI Service
-
-```python
-# src/clients/user_grpc_client.py
-import grpc
-from src.generated import user_service_pb2, user_service_pb2_grpc
-
-
-class UserServiceClient:
-    def __init__(self, host: str = "user-service", port: int = 50051) -> None:
-        self._channel = grpc.aio.insecure_channel(f"{host}:{port}")
-        self._stub = user_service_pb2_grpc.UserServiceStub(self._channel)
-
-    async def get_user(self, user_id: str) -> user_service_pb2.UserResponse:
-        return await self._stub.GetUser(
-            user_service_pb2.GetUserRequest(user_id=user_id)
-        )
-
-    async def close(self) -> None:
-        await self._channel.close()
-```
-
-Inject it into a FastAPI route via `Depends`:
-
-```python
-# src/api/orders.py
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
-
-from src.clients.user_grpc_client import UserServiceClient
-
-router = APIRouter()
-
-
-class OrderUserResponse(BaseModel):
-    email: str
-    full_name: str
-
-
-def get_user_client() -> UserServiceClient:
-    # In production, wire this through the IoC container (see §7.6)
-    return UserServiceClient(host="user-service")
-
-
-@router.get("/orders/{order_id}/owner", response_model=OrderUserResponse)
-async def get_order_owner(
-    order_id: str,
-    client: UserServiceClient = Depends(get_user_client),
-) -> OrderUserResponse:
-    user = await client.get_user(user_id=order_id)
-    return OrderUserResponse(email=user.email, full_name=user.full_name)
-```
+| | gRPC | REST |
+|--|------|------|
+| **Speed** | Binary + HTTP/2 multiplexing — faster | Text JSON + HTTP/1.1 — slower |
+| **Contract safety** | Enforced at compile time (`.proto`) | Optional, documentation-only (OpenAPI) |
+| **Debuggability** | Needs tooling (`grpcurl`) to inspect | `curl` + human-readable JSON |
+| **Browser support** | Needs a proxy (`grpc-web`) | Native |
+| **Best fit** | Service-to-service, high call volume | Public APIs, browsers, simple internal calls |
 
 ### Streaming Types
+
+You'll almost always use **unary** RPCs (one request → one response). gRPC also supports three streaming modes — know they exist:
 
 | Type                        | Pattern                            | When to Use                              |
 |-----------------------------|------------------------------------|------------------------------------------|
@@ -587,18 +468,25 @@ async def get_order_owner(
 | **Client streaming**        | stream of requests → one response  | File uploads, batch ingestion            |
 | **Bidirectional streaming** | stream ↔ stream                    | Real-time chat, live telemetry           |
 
-### Inter-Service Communication Decision Table
+### Choosing Between REST, gRPC, and a Queue
 
-| Requirement                                          | Use                            |
-|------------------------------------------------------|--------------------------------|
-| External API (browser, mobile app, third-party)      | REST (HTTP/JSON)               |
-| Internal call — low latency, strict typed contract   | gRPC                           |
-| Internal call — decouple services, fire-and-forget   | Message queue (B6 — Redis Streams / RabbitMQ) |
-| Internal call — simple, no performance constraints   | REST                           |
+```mermaid
+flowchart TD
+    Start{"Who is calling?"}
+    Start -->|Browser or third-party| REST1["Use REST"]
+    Start -->|Another internal service| Q2{"Needs an immediate response?"}
+    Q2 -->|"No — fire and forget"| Queue["Use a message queue<br/>(B6 — Redis Streams / RabbitMQ)"]
+    Q2 -->|Yes| Q3{"High call volume or a strict typed contract?"}
+    Q3 -->|Yes| GRPC["Use gRPC"]
+    Q3 -->|No| REST2["Use REST"]
 
-> [!TIP] Keep your gRPC port separate from your HTTP port. Convention: HTTP on `8000`,
-> gRPC on `50051`. Expose both in `docker-compose.yml` if other services need to reach
-> the gRPC server.
+    classDef rest fill:#e7f5ff,stroke:#1971c2,color:#1f2937;
+    classDef grpc fill:#f3e8ff,stroke:#9c36b5,color:#1f2937;
+    classDef queue fill:#fff3bf,stroke:#f08c00,color:#1f2937;
+    class REST1,REST2 rest
+    class GRPC grpc
+    class Queue queue
+```
 
 ---
 
@@ -708,7 +596,7 @@ async def health() -> dict[str, str]:
 ---
 
 > [!TIP] Advanced — Preview for B8
-> Section 7.6 introduces the full Clean Architecture model, IoC containers with `dependency-injector`, and uv workspace monorepos. This is a preview of the patterns you will implement fully in B8. **On your first pass through B7, you may skim this section** — focus on Docker, Docker Compose, and gRPC first. Return here when starting B8.
+> Section 7.6 maps the full Clean Architecture model, dependency wiring with `Depends`, and uv workspace monorepos. This is a preview of the patterns you'll apply in B8. **On your first pass through B7, you may skim this section** — focus on Docker, Docker Compose, and gRPC first. Return here when starting B8.
 
 ## 7.6 — Production Codebase Architecture
 
@@ -722,26 +610,22 @@ async def health() -> dict[str, str]:
 
 ### The 4-Layer Model
 
+```mermaid
+flowchart TB
+    C["Controller Layer<br/>FastAPI routes, middleware, event handlers"]
+    O["Orchestration Layer<br/>Use cases, DTO/Entity mapping, transactions"]
+    D["Domain Layer — core<br/>Entities, business rules, repository interfaces<br/>no framework imports"]
+    I["Infrastructure Layer<br/>SQLAlchemy repos, Redis, gRPC clients, Alembic"]
+
+    C -->|depends on| O
+    O -->|depends on| D
+    I -. implements interfaces .-> D
+
+    classDef core fill:#d8f3dc,stroke:#2d6a4f,stroke-width:2px,color:#1f2937;
+    class D core
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                           CONTROLLER LAYER                           │
-│  FastAPI routes, middleware, event handlers                          │
-│  HTTP in / HTTP out — no business logic lives here                   │
-├──────────────────────────────────────────────────────────────────────┤
-│                         ORCHESTRATION LAYER                          │
-│  Use cases, DTO ↔ Entity mapping, transaction scope                  │
-│  One use case class per user-facing action                           │
-├──────────────────────────────────────────────────────────────────────┤
-│                             DOMAIN LAYER                             │
-│  Entities, value objects, business rules                             │
-│  Repository interfaces — pure Python, no framework imports           │
-├──────────────────────────────────────────────────────────────────────┤
-│                         INFRASTRUCTURE LAYER                         │
-│  SQLAlchemy repos, Redis client, gRPC clients, Alembic               │
-│  Implements domain repository interfaces                             │
-└──────────────────────────────────────────────────────────────────────┘
-         Dependency direction: outer → inner  (never reversed)
-```
+
+Dependencies point **inward** — every layer depends on the Domain, and the Domain depends on nothing.
 
 **Dependency direction rule**: outer layers depend on inner layers. The domain layer
 **never** imports from FastAPI, SQLAlchemy, Redis, or any framework. Infrastructure
@@ -782,7 +666,7 @@ my-service/
 │   └── user_service.proto
 └── src/
     ├── main.py                      # FastAPI app factory
-    ├── container.py                 # IoC container (dependency-injector)
+    ├── container.py                 # optional IoC container (advanced — see §7.6)
     ├── settings.py                  # Pydantic Settings
     │
     ├── api/                         # ── Controller layer ──────────────────
@@ -822,90 +706,47 @@ my-service/
         └── versions/
 ```
 
-### IoC Container with `dependency-injector`
+### Wiring Dependencies
 
-The **IoC (Inversion of Control) container** wires your entire dependency graph in one
-place. Instead of constructing repositories and use cases inside every route, you declare
-them once and the framework injects them.
-
-```bash
-uv add dependency-injector
-```
-
-Two provider types used most often:
-
-- **`providers.Singleton`** — creates the object **once** and reuses it for the lifetime of the app. Use for the DB engine and session factory — they are expensive to initialise and safe to share across requests.
-- **`providers.Factory`** — creates a **fresh instance** on every injection. Use for repositories and use cases — each request should get its own instance to avoid shared mutable state.
+As the codebase grows you need to construct the dependency graph — sessions, repositories,
+use cases — and hand each route what it needs. For a service of this size, plain FastAPI
+`Depends` (from [[Backend/B2 - Web & API Fundamentals|B2 §2.7]]) is all you need: each
+provider builds one layer and depends on the one below it.
 
 ```python
-# src/container.py
-from dependency_injector import containers, providers
+# src/api/deps.py — wire the dependency graph with plain FastAPI Depends
+from collections.abc import AsyncGenerator
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.infrastructure.database import get_async_engine, get_async_session_factory
+from src.infrastructure.database import SessionLocal          # engine + session factory, created once at import
 from src.infrastructure.repositories.user_repo import SQLAlchemyUserRepo
 from src.use_cases.create_user import CreateUserUseCase
 
 
-class Container(containers.DeclarativeContainer):
-    wiring_config = containers.WiringConfiguration(modules=["src.api.users"])
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    async with SessionLocal() as session:
+        yield session
 
-    config = providers.Configuration()
 
-    # Infrastructure
-    db_engine = providers.Singleton(
-        get_async_engine,
-        url=config.database_url,
-    )
-    db_session_factory = providers.Singleton(
-        get_async_session_factory,
-        engine=db_engine,
-    )
+def get_user_repo(session: AsyncSession = Depends(get_session)) -> SQLAlchemyUserRepo:
+    return SQLAlchemyUserRepo(session)
 
-    # Repositories
-    user_repo = providers.Factory(
-        SQLAlchemyUserRepo,
-        session_factory=db_session_factory,
-    )
 
-    # Use cases
-    create_user_use_case = providers.Factory(
-        CreateUserUseCase,
-        user_repo=user_repo,
-    )
+def get_create_user_use_case(
+    repo: SQLAlchemyUserRepo = Depends(get_user_repo),
+) -> CreateUserUseCase:
+    return CreateUserUseCase(user_repo=repo)
 ```
 
-```python
-# src/main.py
-from fastapi import FastAPI
-
-from src.container import Container
-from src.settings import Settings
-from src.api import users
-
-
-def create_app() -> FastAPI:
-    settings = Settings()
-
-    container = Container()
-    container.config.from_pydantic(settings)
-    container.wire(modules=[users])
-
-    app = FastAPI()
-    app.container = container  # type: ignore[attr-defined]
-    app.include_router(users.router, prefix="/users")
-    return app
-
-
-app = create_app()
-```
+The route just declares what it needs — FastAPI resolves the whole chain:
 
 ```python
 # src/api/users.py
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from dependency_injector.wiring import inject, Provide
 
-from src.container import Container
+from src.api.deps import get_create_user_use_case
 from src.use_cases.create_user import CreateUserUseCase
 
 
@@ -924,14 +765,23 @@ router = APIRouter()
 
 
 @router.post("/", status_code=201, response_model=UserResponse)
-@inject
 async def create_user(
     body: CreateUserRequest,
-    use_case: CreateUserUseCase = Depends(Provide[Container.create_user_use_case]),
+    use_case: CreateUserUseCase = Depends(get_create_user_use_case),
 ) -> UserResponse:
     user = await use_case.execute(email=body.email, full_name=body.full_name)
     return UserResponse(id=user.id, email=user.email, full_name=user.full_name)
 ```
+
+> [!TIP] Advanced — IoC containers
+> As a codebase grows, wiring every dependency by hand in `deps.py` gets repetitive. Large
+> projects centralize it in an **IoC (Inversion of Control) container** library like
+> [`dependency-injector`](https://python-dependency-injector.ets-labs.org/): you declare each
+> provider once — `Singleton` for expensive shared objects (the DB engine), `Factory` for
+> per-request objects (repositories, use cases) — and it injects the entire graph, so you never
+> construct dependencies inside routes. The `Depends` wiring above is exactly what it automates.
+> See [[docs/clean-architecture|the Clean Architecture reference]] for the full container.
+> **You don't need it for the capstone.**
 
 ### uv Workspace Monorepo
 
@@ -992,8 +842,8 @@ You can now:
 - **Containerise a FastAPI service** — multi-stage Dockerfile with pinned base images, non-root user, `.dockerignore`, and `COPY --from` to install `uv` without bloating the final image
 - **Orchestrate multi-service environments with Docker Compose** — `depends_on` with health checks, named volumes for DB persistence, `env_file` for secrets, and a shared network for service-to-service DNS
 - **Design microservice boundaries** — when to split vs. keep together, the API Gateway pattern, service discovery, and the trade-offs of inter-service HTTP vs. event-driven communication
-- **Call services via gRPC** — define a `.proto` contract, generate Python stubs with `grpcio-tools`, implement an async server, and call it from a FastAPI route with `grpc.aio`
-- **Structure a production codebase with Clean Architecture** — 4-layer model (controller / orchestration / domain / infrastructure), the dependency direction rule, and `dependency-injector` for IoC container wiring
+- **Understand gRPC for internal calls** — protocol buffers, HTTP/2, unary vs streaming, and when to choose gRPC over REST or a message queue
+- **Structure a production codebase with Clean Architecture** — 4-layer model (controller / orchestration / domain / infrastructure), the dependency direction rule, and wiring dependencies with FastAPI `Depends` (with IoC containers as the next step for larger codebases)
 
 ---
 
@@ -1004,12 +854,11 @@ You can now:
 - [ ] Build the image with `docker build` and confirm `docker run -p 8000:8000` serves the health endpoint
 - [ ] Write a `docker-compose.yml` that starts the API, PostgreSQL, and Redis with `healthcheck` on both DB services
 - [ ] Confirm `docker compose up --build -d` brings up the full stack and `docker compose logs -f` shows no errors
-- [ ] Define a `.proto` file with at least one unary `rpc` method and generate Python stubs with `grpc_tools.protoc`
-- [ ] Implement a gRPC servicer and call it successfully from a Python gRPC stub
+- [ ] Explain what a `.proto` contract defines and when to choose gRPC over REST or a message queue
 - [ ] Draw a service architecture diagram for a system with at least 3 services, labelling sync (REST/gRPC) vs async (queue) calls
 - [ ] Explain in one sentence each: when to use REST vs gRPC vs message queue for internal communication
 - [ ] Map a sample FastAPI codebase to the 4-layer Clean Architecture model (controller / orchestration / domain / infrastructure)
-- [ ] Wire one use case through the `dependency-injector` container and inject it into a FastAPI route with `Depends(Provide[...])`
+- [ ] Wire one use case through a `deps.py` provider and inject it into a FastAPI route with `Depends`
 
 ## 📚 Domain References
 
@@ -1053,7 +902,7 @@ You can now:
 **A:** Outer layers (infrastructure, controllers) depend on inner layers (domain). The domain layer never imports from FastAPI, SQLAlchemy, or any other framework.
 
 **Q:** What does an IoC container do?
-**A:** It wires the entire dependency graph in one place. You declare how to construct repositories, use cases, and clients once in the container; `Depends(Provide[...])` injects them into routes automatically.
+**A:** It wires the entire dependency graph in one place — you declare how to build repositories, use cases, and clients once, instead of constructing them inside routes. Libraries like `dependency-injector` automate the `Depends` wiring you'd otherwise write by hand.
 
 **Q:** What does CAP theorem say, and what is the practical trade-off?
 **A:** A distributed system can guarantee at most two of: Consistency, Availability, Partition Tolerance. Since network partitions are inevitable, the real choice is CP (fail during a partition rather than return stale data) vs AP (return possibly stale data but stay available).
