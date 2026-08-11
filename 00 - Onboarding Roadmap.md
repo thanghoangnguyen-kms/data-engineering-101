@@ -51,7 +51,7 @@ status: in-progress
 |---|--------|--------|-----------|
 | 1 | [[DataEngineering/D1 - Foundations & Tooling\|D1 — Foundations & Tooling]] | ✅ Complete | [[DataEngineering/Checkpoints/CP1 - Tooling & Environment Ready\|CP1]] |
 | 2 | [[DataEngineering/D2 - SQL & Data Modeling\|D2 — SQL & Data Modeling]] | ✅ Complete | [[DataEngineering/Checkpoints/CP2 - SQL Proficiency\|CP2]] |
-| 3 | [[DataEngineering/D3 - Data Storage & Formats\|D3 — Data Storage & Formats]] | 🔴 Not started | [[DataEngineering/Checkpoints/CP3 - Storage & Modeling\|CP3]] |
+| 3 | [[DataEngineering/D3 - Data Storage & Formats\|D3 — Data Storage & Formats]] | ✅ Complete | [[DataEngineering/Checkpoints/CP3 - Storage & Modeling\|CP3]] |
 | 4 | [[DataEngineering/D4 - Batch Processing & ETL\|D4 — Batch Processing & ETL]] | 🔴 Not started | [[DataEngineering/Checkpoints/CP4 - Batch Pipeline\|CP4]] |
 | 5 | [[DataEngineering/D5 - Stream Processing\|D5 — Stream Processing]] | 🔴 Not started | [[DataEngineering/Checkpoints/CP5 - Stream Pipeline\|CP5]] |
 | 6 | [[DataEngineering/D6 - Cloud & Orchestration\|D6 — Cloud & Orchestration]] | 🔴 Not started | [[DataEngineering/Checkpoints/CP6 - Cloud Deployment\|CP6]] |
