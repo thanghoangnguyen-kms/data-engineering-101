@@ -30,7 +30,7 @@ An Obsidian vault for onboarding intern engineers through two structured learnin
 |---|--------|--------|
 | D1 | Foundations & Tooling | ✅ Complete |
 | D2 | SQL & Data Modeling | ✅ Complete |
-| D3 | Data Storage & Formats | 🔴 Not started |
+| D3 | Data Storage & Formats | ✅ Complete |
 | D4 | Batch Processing & ETL | 🔴 Not started |
 | D5 | Stream Processing | 🔴 Not started |
 | D6 | Cloud & Orchestration | 🔴 Not started |
@@ -38,7 +38,7 @@ An Obsidian vault for onboarding intern engineers through two structured learnin
 
 **Estimated duration:** ~3 months at 5–10 hrs/week
 
-**Tech stack:** Python · DuckDB · dbt Core · Databricks Community Edition (Azure) · Azure Blob / ADLS Gen2 · Azure Data Factory · Docker · Git · Kafka *(conceptual only)*
+**Tech stack:** Python · DuckDB · dbt Core · Databricks Free Edition (Azure) · Azure Blob / ADLS Gen2 · Azure Data Factory · Docker · Git · Kafka *(conceptual only)*
 
 ## 📖 How to Use
 

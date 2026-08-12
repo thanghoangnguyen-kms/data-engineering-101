@@ -1136,7 +1136,7 @@ Always prefer explicit `CAST` — it makes the intended type conversion visible 
 
 ### Forward Pointer
 
-How SQL types map to file format types — and where precision is silently lost during serialisation across Parquet, Avro, and JSON — is covered in [[D3 - Data Storage & Formats]].
+How SQL types map to file format types — and where precision is silently lost during serialisation across Parquet, Avro, and JSON — is covered in [[D3 - Data Storage & Formats#Type Mapping & Precision Loss|D3 §3.4]].
 
 ---
 

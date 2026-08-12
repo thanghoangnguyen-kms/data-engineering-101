@@ -1,7 +1,8 @@
 # AGENTS.md — Data Engineering 101
 
-> This file instructs AI agents (Copilot, Claude Code, etc.) on how to work inside this Obsidian vault.
+> This file is the **authoritative** source instructing AI agents (Copilot, Claude Code, etc.) on how to work inside this Obsidian vault — structure, conventions, content rules, tech stack, and constraints.
 > It supplements `.github/copilot-instructions.md` with project-specific conventions for the Data Engineering 101 onboarding vault.
+> `CLAUDE.md` supplements this file with Claude-Code-only notes (e.g. using `rtk` for token-efficient search) and defers here for everything else — don't duplicate vault conventions there; add them here instead.
 
 ---
 
@@ -284,7 +285,7 @@ Each domain note also includes a `## 📚 Domain References` section with topic-
 | **Language** | Python 3.x | Primary language for all DE work |
 | **Local SQL** | **DuckDB** | Zero-config, `pip install duckdb`, runs SQL on Parquet/CSV/JSON files directly. Use for D2 SQL exercises and D3 file format practice |
 | **Transformation** | **dbt Core** | Free CLI, connects to DuckDB locally and Databricks on cloud. Primary tool for D4 |
-| **Distributed Processing** | **Databricks Community Edition** (Azure) | Free, browser-based, no cluster setup. PySpark + SparkSQL included. Use for D4 Spark section |
+| **Distributed Processing** | **Databricks Free Edition** (Azure) | Free, browser-based, **serverless-only** — no cluster creation at all. PySpark + Spark SQL included (R and Scala are not). Unity Catalog on by default. Use for D4 Spark section. Replaced Community Edition, which is retired |
 | **Cloud Platform** | **Microsoft Azure** | Azure Blob Storage / ADLS Gen2 for object storage, Azure Data Factory for orchestration |
 | **Orchestration** | **Azure Data Factory** | Azure-native, visual UI, minimal config. Covers D6 orchestration concepts |
 | **Containerization** | **Docker Desktop** | Local container runtime for D6 |
@@ -369,9 +370,42 @@ When a behavior is uncertain, check in this order:
 | `VARCHAR[]` array type | ✅ Yes | Inline array literals like `['a', 'b', 'c']` |
 | `FLOAT` vs `DECIMAL` precision | ✅ Confirmed | `SUM(9.99::FLOAT)` over 1000 rows ≠ 9990; `DECIMAL(10,2)` gives exact `9990.00` |
 
+#### File Formats & Extensions
+
+Verified live on **DuckDB v1.4.5 LTS** while writing D3.
+
+| Behaviour | Result | Notes |
+|-----------|--------|-------|
+| `avro` extension origin | ✅ **Core** | `INSTALL avro;` — **not** `FROM community`. `installed_from = 'core'` |
+| `avro` write support | ⚠️ **Partial** | `COPY t TO 'x.avro' (FORMAT avro)` works for `INTEGER`, `BIGINT`, `VARCHAR`, `DOUBLE`, `BOOLEAN`, `LIST`, `STRUCT` |
+| `avro` write — unsupported types | ❌ Hard error | `DATE`, `TIMESTAMP`, `TIMESTAMPTZ`, `DECIMAL(p,s)`, `UUID` all raise `Not implemented Error: Can't convert logical type '<T>' to Avro type` |
+| `iceberg` extension | ✅ Core, read | Reads standalone; **writes require attaching a REST catalog** (the catalog *is* the commit) |
+| `delta` extension | ✅ Core | Read plus limited blind-insert only |
+| `icu` extension | **Required** for named timezones | Without `INSTALL icu; LOAD icu;`, `SET TimeZone='Asia/Ho_Chi_Minh'` fails (Python client raises a `pytz` import error) |
+| `hive_partitioning` | Auto-detected | Passing the flag is unnecessary; `y=2026/m=3/` prunes automatically |
+| `filename` | Automatic since v1.3.0 | Added as a virtual column; `filename=true` is a no-op |
+| `ROW_GROUP_SIZE` default | **122,880 rows** | Why a 1,000,000-row file has 9 row groups. Distinct from `FILE_SIZE_BYTES` (bytes) |
+| Parquet codecs accepted | `uncompressed`, `snappy`, `gzip`, `zstd`, `brotli`, `lz4`, `lz4_raw` | Default `snappy`. Measured on 1M rows: 19.47 / 10.06 / 4.90 / **2.61** MB for none/snappy/gzip/zstd |
+| `DECIMAL(p,s)` → Parquet physical type | **Precision-dependent** | `INT32` (p≤9), `INT64` (p≤18), `FIXED_LEN_BYTE_ARRAY` (p≥19). Not always `FIXED_LEN_BYTE_ARRAY` |
+| `DECIMAL` through JSON | ❌ Precision lost | 1,000 × `9.99::DECIMAL(10,2)` sums to `9990.00` via Parquet but `9989.999999999829` (as `DOUBLE`) via JSON |
+| Parquet positional multi-file read | ⚠️ Silently drops columns | `read_parquet([f1, f2])` where `f2` has an extra column returns only `f1`'s columns, **no error**. Use `union_by_name=true` |
+| `union_by_name` + a renamed column | ⚠️ Produces orphan columns | A rename yields **both** old and new columns, each half-`NULL`. Only table-format column IDs prevent this |
+| CSV reader on added column | ✅ Fails loudly | Raises `Error when sniffing file` rather than shifting values (better than most tools) |
+| CSV reader on **reordered** same-count columns | ❌ Silently wrong | Values land in the wrong columns and parse cleanly |
+| Over-partitioning | ❌ Can OOM the write | `PARTITION_BY (customer_id)` with 50,000 distinct values raised `OutOfMemoryException` (12.7 GiB) |
+| Sorting effect on file size | ⚠️ **Often larger** | `ORDER BY order_date` grew the file 2.61 → 6.83 MB: sort column 25× smaller, but `category` 198× larger, `customer_id` 3.6× larger. Sort for **skipping**, not size |
+
 #### EXPLAIN Output
 
 DuckDB renders `EXPLAIN` as a **visual tree** (not tabular). Filters are embedded inside scan nodes, not separate operators.
+
+**Partition-pruning evidence** — `EXPLAIN ANALYZE` on a Hive-partitioned glob shows these lines inside the `PARQUET_SCAN` node. This is the observable proof of pruning; wall-clock is not (a pruned query can be *slower* on small data):
+
+```text
+File Filters: (m = 3)
+Scanning Files: 1/12
+Total Files Read: 1
+```
 
 | Operator | Present? | Notes |
 |----------|---------|-------|
@@ -406,7 +440,24 @@ DuckDB renders `EXPLAIN` as a **visual tree** (not tabular). Filters are embedde
 
 **Docs:** [spark.apache.org/docs/latest](https://spark.apache.org/docs/latest/) · [docs.databricks.com](https://docs.databricks.com) · **Changelog:** [spark.apache.org/news](https://spark.apache.org/news/)
 
-*No verified behaviors recorded yet. Add entries here as they are confirmed.*
+#### Databricks Free Edition constraints
+
+Community Edition is **retired**; Free Edition replaced it. Verified against [Free Edition](https://learn.microsoft.com/en-us/azure/databricks/getting-started/free-edition) and [Free Edition limitations](https://learn.microsoft.com/en-us/azure/databricks/getting-started/free-edition-limitations) on 2026-08-12. **Check these before writing D4's Spark section or D6.**
+
+| Constraint | Detail | Impact on this vault |
+|-----------|--------|----------------------|
+| **Serverless compute only** | "Custom compute configurations are not supported" | ❌ **No cluster-creation steps.** Any "spin up a cluster / choose a runtime / set `spark.executor.memory`" instruction is dead — do not write one |
+| PySpark + Spark SQL | ✅ Supported | D4's Spark section is viable as planned |
+| **R and Scala** | ❌ Not supported | Keep all Spark examples in **Python or SQL** |
+| Unity Catalog | On by default; one metastore per account | Interns meet **Delta-in-Unity-Catalog**, not raw Delta on DBFS — matters for D3 §3.3 framing and D4 §4.4 |
+| SQL warehouses | One, capped at `2X-Small` | Fine for teaching; don't promise concurrency |
+| Jobs | Max **5 concurrent job tasks** per account | Keep D4/D6 orchestration examples small |
+| Lakeflow pipelines | One active pipeline per type | Don't design multi-pipeline exercises |
+| **Outbound internet** | Restricted to trusted domains unless LinkedIn-verified | ⚠️ Interns may **not** be able to call arbitrary REST APIs from a Databricks notebook. Do ingestion exercises locally (DuckDB/Python) as D1 §1.3 already does |
+| Quota exceeded | Compute shut down for the rest of the day | Keep exercises short; warn interns not to leave jobs running |
+| Account scope | One workspace, no account console/APIs, non-commercial use only | No admin/governance hands-on — keep D6 governance conceptual |
+
+*No Apache Spark engine behaviours verified yet. Add entries here as they are confirmed.*
 
 ---
 
@@ -450,7 +501,7 @@ DuckDB renders `EXPLAIN` as a **visual tree** (not tabular). Filters are embedde
 |--------|------|-----------|---------|-----------|
 | D1: Foundations & Tooling | `DataEngineering/D1 - Foundations & Tooling.md` | Mindset shift · Python for DE · REST APIs · Git · Linux · DuckDB setup | ✅ Complete | `DataEngineering/Checkpoints/CP1 - Tooling & Environment Ready.md` |
 | D2: SQL & Data Modeling | `DataEngineering/D2 - SQL & Data Modeling.md` | Window functions/CTEs · SQL for DE · Query perf · Normalization · Dimensional modeling | ✅ Complete | `DataEngineering/Checkpoints/CP2 - SQL Proficiency.md` |
-| D3: Data Storage & Formats | `DataEngineering/D3 - Data Storage & Formats.md` | OLTP/OLAP · DWH/Lake/Lakehouse · Formats · Medallion arch · Iceberg/Delta Lake | 🔴 Not started | `DataEngineering/Checkpoints/CP3 - Storage & Modeling.md` |
+| D3: Data Storage & Formats | `DataEngineering/D3 - Data Storage & Formats.md` | OLTP/OLAP · Relational vs NoSQL · DWH/Lake/Lakehouse · Object storage · Iceberg/Delta Lake · Catalogs · Formats (CSV/JSON/Parquet/Avro/ORC/Arrow) · Schema evolution · Type mapping & precision loss · Medallion arch · Partitioning & small files · DuckDB local analytics · Vector DBs *(optional)* | ✅ Complete | `DataEngineering/Checkpoints/CP3 - Storage & Modeling.md` |
 | D4: Batch Processing & ETL | `DataEngineering/D4 - Batch Processing & ETL.md` | ETL vs ELT · dbt · Pipeline patterns · Data quality · Spark | 🔴 Not started | `DataEngineering/Checkpoints/CP4 - Batch Pipeline.md` |
 | D5: Stream Processing | `DataEngineering/D5 - Stream Processing.md` | Batch vs stream · Kafka (conceptual) · Lambda/Kappa arch · Delivery guarantees | 🔴 Not started | `DataEngineering/Checkpoints/CP5 - Stream Pipeline.md` |
 | D6: Cloud & Orchestration | `DataEngineering/D6 - Cloud & Orchestration.md` | Cloud fundamentals · Docker · ADF orchestration · Governance & cost | 🔴 Not started | `DataEngineering/Checkpoints/CP6 - Cloud Deployment.md` |

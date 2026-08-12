@@ -11,6 +11,7 @@
 # Agent/Copilot internals
 .agents/
 .github/
+.claude/
 skills-lock.json
 
 # Internal tech debt & review notes (not for interns)

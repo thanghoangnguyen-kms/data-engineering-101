@@ -44,7 +44,7 @@ track: data-engineering
 
 ## 7.3 — Vector Databases & Storage Patterns
 
-*Content coming soon. Pinecone, Weaviate, pgvector, Chroma. When to use which. See also [[D3 - Data Storage & Formats#3.7 — Vector Databases (Optional — AI workloads)|D3 §3.7]].*
+*Content coming soon. Pinecone, Weaviate, pgvector, Chroma. When to use which. See also [[D3 - Data Storage & Formats#3.8 — Vector Databases (Optional — AI workloads)|D3 §3.8]].*
 
 > [!WARNING] Common Anti-Patterns
 > *To be defined when writing content.*

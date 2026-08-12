@@ -88,6 +88,11 @@ track: data-engineering
 > [!IMPORTANT] Must-Know for Production DE
 > Spark is the industry-standard distributed processing engine. Understanding how it works *under the hood* separates engineers who just run Spark jobs from engineers who can debug, optimize, and design them.
 
+> [!WARNING] Platform Constraint — Read Before Writing This Section
+> The hands-on platform is **Databricks Free Edition** (Community Edition is retired). Free Edition is **serverless-only**: custom compute configurations are not supported, so there is **no cluster to create or size**.
+>
+> Consequences for this section: teach Driver/Executor/Cluster Manager as **concepts**, not as a setup walkthrough — write no "spin up a cluster", "choose a runtime", or `spark.executor.memory` tuning steps. Keep all examples in **Python or SQL** (R and Scala are unsupported). Outbound internet is restricted, so don't call external APIs from a notebook — do ingestion locally as [[D1 - Foundations & Tooling]] §1.3 does. Full constraint table in `AGENTS.md § Apache Spark / Databricks`.
+
 *Content coming soon. This section covers:*
 
 **Architecture**
