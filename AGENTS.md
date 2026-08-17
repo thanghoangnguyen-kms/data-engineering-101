@@ -285,7 +285,7 @@ Each domain note also includes a `## 📚 Domain References` section with topic-
 | **Language** | Python 3.x | Primary language for all DE work |
 | **Local SQL** | **DuckDB** | Zero-config, `pip install duckdb`, runs SQL on Parquet/CSV/JSON files directly. Use for D2 SQL exercises and D3 file format practice |
 | **Transformation** | **dbt Core** | Free CLI, connects to DuckDB locally and Databricks on cloud. Primary tool for D4 |
-| **Distributed Processing** | **Databricks Free Edition** (Azure) | Free, browser-based, **serverless-only** — no cluster creation at all. PySpark + Spark SQL included (R and Scala are not). Unity Catalog on by default. Use for D4 Spark section. Replaced Community Edition, which is retired |
+| **Distributed Processing** | **Databricks Free Edition** (Azure) | Free, browser-based, **serverless-only** — no cluster creation at all. PySpark + Spark SQL included (R and Scala are not). Unity Catalog on by default. Use for D4 Spark section. Replaced Community Edition, which is retired. *Full constraint table under Verified Tech Stack Behaviors — no cache APIs, no Spark UI, no RDDs, DBFS disabled, restricted outbound internet* |
 | **Cloud Platform** | **Microsoft Azure** | Azure Blob Storage / ADLS Gen2 for object storage, Azure Data Factory for orchestration |
 | **Orchestration** | **Azure Data Factory** | Azure-native, visual UI, minimal config. Covers D6 orchestration concepts |
 | **Containerization** | **Docker Desktop** | Local container runtime for D6 |
@@ -395,6 +395,26 @@ Verified live on **DuckDB v1.4.5 LTS** while writing D3.
 | Over-partitioning | ❌ Can OOM the write | `PARTITION_BY (customer_id)` with 50,000 distinct values raised `OutOfMemoryException` (12.7 GiB) |
 | Sorting effect on file size | ⚠️ **Often larger** | `ORDER BY order_date` grew the file 2.61 → 6.83 MB: sort column 25× smaller, but `category` 198× larger, `customer_id` 3.6× larger. Sort for **skipping**, not size |
 
+#### Ingestion & Deduplication (execution-verified, DuckDB 1.4.5, during D4)
+
+| Feature | Supported? | Notes |
+|---------|-----------|-------|
+| `read_csv('glob*.csv')` | ✅ Yes | Glob patterns work for CSV, JSON, Parquet |
+| `filename = true` | ✅ Yes | Adds a `filename` column with the source path. **Note the tension with the File Formats row above** ("automatic since v1.3.0, flag is a no-op"): on 1.4.5 a read *without* the option returned no `filename` column under `SELECT *`, so the flag does affect the projection. Verify before relying on either claim |
+| `filename = '_source_file'` | ✅ Yes | **Names the column directly** — cleaner than aliasing, which otherwise leaves a duplicate `filename` column under `SELECT *` |
+| `all_varchar = true` | ✅ Yes | Reads every column as text — the correct Bronze-layer setting; prevents inference failing the load on one bad value |
+| `union_by_name = true` | ✅ Yes | Tolerates drifted schemas across files |
+| `SELECT * EXCLUDE (col)` | ✅ Yes | Useful when a helper column would otherwise duplicate |
+| `QUALIFY` | ✅ Yes | Filters on window-function results; `WHERE` cannot (it runs before window evaluation) |
+| `TRY_CAST` | ✅ Yes | Returns `NULL` instead of raising. Plain `CAST('N/A' AS DECIMAL)` raises `Conversion Error` — so a hard cast kills the model *before* any `not_null` test can flag the row |
+| `to_json(table_alias)` | ✅ Yes | Serialises a whole row — handy for quarantine tables |
+| `date_diff('second', a, b)` | ✅ Yes | |
+| `DATE - interval 3 day` | ✅ Yes | Returns `TIMESTAMP` |
+| `CHECK` constraint enforcement | ✅ Enforced | `Constraint Error: CHECK constraint failed on table ...` |
+| `INSERT ... ON CONFLICT DO UPDATE` | ✅ Idempotent | Verified: row count stable across repeated identical upserts |
+
+> **Deduplication gotcha (verified):** `QUALIFY ROW_NUMBER() OVER (PARTITION BY key ORDER BY _ingested_at DESC)` is **non-deterministic** for duplicates arriving in the same batch — `_ingested_at` is one value per statement and `_source_file` is identical, so the tiebreak is arbitrary and may keep the *older* record. Order by a timestamp from the **source data** first, then use ingestion metadata as a tiebreaker.
+
 #### EXPLAIN Output
 
 DuckDB renders `EXPLAIN` as a **visual tree** (not tabular). Filters are embedded inside scan nodes, not separate operators.
@@ -432,7 +452,52 @@ Total Files Read: 1
 
 **Docs:** [docs.getdbt.com](https://docs.getdbt.com) · **Changelog:** [github.com/dbt-labs/dbt-core/releases](https://github.com/dbt-labs/dbt-core/releases)
 
-*No verified behaviors recorded yet. Add entries here as they are confirmed.*
+Verified during D4 authoring by **running a real `dbt-duckdb` project** (dbt-core 1.10.23, dbt-duckdb 1.10.0, DuckDB 1.4.5) unless marked *(docs)*.
+
+#### Test & YAML syntax
+
+| Behaviour | Result | Notes |
+|-----------|--------|-------|
+| `data_tests:` vs `tests:` | Both work | `tests:` is a deprecated alias. **Cannot use both on one resource.** |
+| Test arguments nesting | `arguments:` required | Top-level args emit `[WARNING][MissingArgumentsPropertyInGenericTestDeprecation]`. Nested form parses clean. `arguments:` needs **v1.10.5+** *(docs)* |
+| Test `config:` placement | Same level as `arguments:` | `severity`, `error_if`, `warn_if`, `store_failures` all live under `config:` |
+| `store_failures` output | Schema `<schema>_dbt_test__audit` | One table per test, e.g. `main_dbt_test__audit.unique_stg_orders_order_id` |
+| Source `freshness` / `loaded_at_field` | Must nest under `config:` | Flat form deprecated. Both keys moved into `config:` in recent releases |
+| `identifier:` on a source table | Works | Maps logical `source('raw','orders')` → real table `bronze_orders` |
+
+#### Snapshots
+
+| Behaviour | Result | Notes |
+|-----------|--------|-------|
+| Snapshotting an **all-VARCHAR** source | ❌ **Fails** | `Binder Error: Cannot mix values of type VARCHAR and TIMESTAMP WITH TIME ZONE in COALESCE operator`. The `timestamp` strategy needs a real timestamp in `updated_at` |
+| Fix | Snapshot a **typed model** | `relation: ref('stg_customers')`, not `source('raw','customers')` |
+| `dbt_valid_to_current` cast | Must match the column type | `cast('9999-12-31' as timestamptz)`. `as date` reproduces the COALESCE error. dbt's docs example uses `to_date()` — written for another warehouse |
+| Meta columns added | `dbt_valid_from`, `dbt_valid_to`, `dbt_scd_id`, `dbt_updated_at` | `dbt_is_deleted` appears **only** with `hard_deletes: new_record` *(docs)* |
+
+#### Contracts
+
+| Behaviour | Result | Notes |
+|-----------|--------|-------|
+| Partial column list under `enforced: true` | ❌ **Fails** | Reports `missing in contract` per undeclared column. Every column needs `name` + `data_type` |
+| Type mismatch | ❌ **Compilation Error** | Fails *before* the table is created. Output is a `\| column_name \| definition_type \| contract_type \| mismatch_reason \|` table |
+| `incremental` + `on_schema_change: ignore` | ❌ **Parse-time error** | `Invalid value for on_schema_change: ignore. Models materialized as incremental with contracts enabled must set on_schema_change to 'append_new_columns' or 'fail'` |
+| `view` materialization | Columns/types only | **`constraints` not supported** *(docs)* |
+| dbt-duckdb constraint enforcement | Enforced at DB level | Unusual — many adapters treat `constraints` as metadata only |
+
+#### Commands & build behaviour
+
+| Behaviour | Result | Notes |
+|-----------|--------|-------|
+| `dbt build` on test failure | Skips downstream | `SKIP relation main.dim_customers ... [SKIP]`. Acts as a circuit breaker |
+| Run-end summary line | `Done. PASS=n WARN=n ERROR=n SKIP=n NO-OP=n TOTAL=n` | `NO-OP` is included; always the last line |
+| Failure detail block | `Completed with 1 error, 0 partial successes, and 0 warnings:` then `Got n results, configured to fail if != 0` plus a `compiled code at target/compiled/...` path | |
+| `packages.yml` present but `dbt deps` not run | ❌ Hard error | `dbt found 1 package(s) specified in packages.yml, but only 0 package(s) installed` |
+| Incremental `delete+insert` + `unique_key` | Idempotent | Verified stable row counts across 3 consecutive runs |
+| Incremental strategies (dbt-duckdb) | `append`, `delete+insert`, `merge`, `microbatch` | `merge` needs **DuckDB 1.4.0+**; `external` materialization does **not** support incremental strategies *(docs)* |
+
+#### Version currency *(docs)*
+
+dbt Core **1.12** is current (Jul 2026); **1.10 and 1.9 are deprecated**. `pip` resolves the newest dbt the local **Python** version allows — Python 3.9 pins you to a deprecated 1.10.x. Install on Python 3.10+ for a supported release.
 
 ---
 
@@ -457,7 +522,58 @@ Community Edition is **retired**; Free Edition replaced it. Verified against [Fr
 | Quota exceeded | Compute shut down for the rest of the day | Keep exercises short; warn interns not to leave jobs running |
 | Account scope | One workspace, no account console/APIs, non-commercial use only | No admin/governance hands-on — keep D6 governance conceptual |
 
-*No Apache Spark engine behaviours verified yet. Add entries here as they are confirmed.*
+#### Serverless Spark API restrictions
+
+Free Edition runs only serverless compute, which removes Spark APIs a normal cluster provides. Verified against [serverless limitations](https://docs.databricks.com/aws/en/compute/serverless/limitations) and [supported Spark properties](https://docs.databricks.com/aws/en/spark/conf).
+
+| Feature | Available? | Notes |
+|---------|:----------:|-------|
+| DataFrame/SQL **cache APIs** | ❌ No | *"Dataframe and SQL cache APIs are not supported on serverless compute."* `cache()`, `persist()`, `CACHE TABLE` all raise |
+| **Spark UI** | ❌ No | *"use the query profile to view information about your Spark queries"* |
+| **RDD APIs** | ❌ No | *"Only Spark Connect APIs are supported"* — `sparkContext` unavailable |
+| **DBFS root** | ❌ Disabled | Path writes like `/tmp/...` fail. Use UC managed tables (`saveAsTable`) or UC volumes (`/Volumes/<cat>/<schema>/<vol>/`) |
+| `dbfs:/databricks-datasets/` | ✅ Readable | Reserved read-only namespace; survives DBFS disablement |
+| Settable Spark properties | **Only 6** | `spark.databricks.execution.timeout`, `spark.sql.legacy.timeParserPolicy`, `spark.sql.session.timeZone`, `spark.sql.shuffle.partitions` (**default `auto`**, not 200), `spark.sql.ansi.enabled` (**default `true`**), `spark.sql.files.maxPartitionBytes` (128 MB) |
+| `spark.sql.autoBroadcastJoinThreshold` | ❌ Not settable | The `broadcast()` hint still works; AQE converts joins at runtime anyway |
+
+> ⚠️ The engine sections below are **documentation-verified, not execution-verified** — no Java or Databricks access existed while writing D4, so no PySpark was run. Upgrade an entry once someone runs it in a notebook.
+
+#### Spark engine defaults (OSS)
+
+| Config | Default | Notes |
+|--------|---------|-------|
+| `spark.sql.shuffle.partitions` | `200` | `auto` on Databricks serverless |
+| `spark.sql.autoBroadcastJoinThreshold` | `10485760` (10 MB) | |
+| `spark.sql.adaptive.enabled` | `true` | **AQE default-on since Spark 3.2**: coalesce shuffle partitions, sort-merge→broadcast conversion, skew-join splitting |
+| `spark.sql.adaptive.skewJoin` thresholds | factor `5.0`, `256 MB` | Advisory partition size 64 MB |
+| `spark.sql.ansi.enabled` | `true` in Spark 4.0 / DBR 17.0+ | Blocks implicit STRING→numeric coercion — an aggregation over a wrongly-inferred string column **errors** instead of returning null |
+| RDD `cache()` | `MEMORY_ONLY` | Overflow partitions **recomputed** |
+| DataFrame/Dataset `cache()` | `MEMORY_AND_DISK` | Overflow partitions **spill to disk**. Same method, different default |
+
+#### CSV reader semantics
+
+| Option | Default | Notes |
+|--------|---------|-------|
+| `mode` | `PERMISSIVE` | Puts malformed text in `columnNameOfCorruptRecord` and **sets malformed fields to null**. `FAILFAST` throws; `DROPMALFORMED` silently discards |
+| `enforceSchema` | `true` | *"the specified or inferred schema will be forcibly applied ... and headers in CSV files will be ignored"* — an explicit schema matches **by position**, not by header name |
+| `inferSchema` | `false` | Costs one extra pass over the data |
+| `nullable=False` in an explicit schema | **Not enforced** on file reads | SPARK-19950; resolved as *Incomplete*. Enforce required-ness with a downstream test |
+| `badRecordsPath` (Databricks only) | — | **Takes precedence over `_corrupt_record`** — rows written there do **not** appear in the resulting DataFrame |
+
+#### Delta Lake
+
+| Behaviour | Notes |
+|-----------|-------|
+| Time travel on a **named table** | `spark.read.option("versionAsOf", 123).table("cat.sch.tbl")` is documented and valid. Also `table("people10m@v123")` and SQL `VERSION AS OF` / `TIMESTAMP AS OF`. `.format("delta")` before `.table()` is a no-op |
+| `VACUUM` retention | 7 days default — bounds how far time travel reaches |
+| Partitioning thresholds | Under **1 TB → don't partition**; *"most tables ... with less than 100 TB of data don't need partitioning"*; if partitioning, each partition **≥ 1 GB** |
+| Liquid clustering | *"Databricks recommends liquid clustering for all new tables, including streaming tables and materialized views"* |
+| `CLUSTER BY` syntax | Cannot stand alone — needs a column definition list, `AS query`, or `LOCATION` |
+| Changing clustering keys | Allowed without rewriting; existing data is **not** reorganised until `OPTIMIZE FULL` |
+
+#### DuckDB ↔ table formats
+
+Writing **Iceberg** from DuckDB is supported but requires an attached Iceberg **REST catalog** — too much setup for intern exercises. `dbt-duckdb` **cannot** write Delta or Iceberg at all; that needs `dbt-databricks` / `dbt-spark`.
 
 ---
 
@@ -502,7 +618,7 @@ Community Edition is **retired**; Free Edition replaced it. Verified against [Fr
 | D1: Foundations & Tooling | `DataEngineering/D1 - Foundations & Tooling.md` | Mindset shift · Python for DE · REST APIs · Git · Linux · DuckDB setup | ✅ Complete | `DataEngineering/Checkpoints/CP1 - Tooling & Environment Ready.md` |
 | D2: SQL & Data Modeling | `DataEngineering/D2 - SQL & Data Modeling.md` | Window functions/CTEs · SQL for DE · Query perf · Normalization · Dimensional modeling | ✅ Complete | `DataEngineering/Checkpoints/CP2 - SQL Proficiency.md` |
 | D3: Data Storage & Formats | `DataEngineering/D3 - Data Storage & Formats.md` | OLTP/OLAP · Relational vs NoSQL · DWH/Lake/Lakehouse · Object storage · Iceberg/Delta Lake · Catalogs · Formats (CSV/JSON/Parquet/Avro/ORC/Arrow) · Schema evolution · Type mapping & precision loss · Medallion arch · Partitioning & small files · DuckDB local analytics · Vector DBs *(optional)* | ✅ Complete | `DataEngineering/Checkpoints/CP3 - Storage & Modeling.md` |
-| D4: Batch Processing & ETL | `DataEngineering/D4 - Batch Processing & ETL.md` | ETL vs ELT · dbt · Pipeline patterns · Data quality · Spark | 🔴 Not started | `DataEngineering/Checkpoints/CP4 - Batch Pipeline.md` |
+| D4: Batch Processing & ETL | `DataEngineering/D4 - Batch Processing & ETL.md` | ETL vs ELT · Ingestion (DuckDB file reads, REST) · dbt · Medallion · Delta/Iceberg · Pipeline patterns · Data quality & contracts · Spark · Error handling | ✅ Complete | `DataEngineering/Checkpoints/CP4 - Batch Pipeline.md` |
 | D5: Stream Processing | `DataEngineering/D5 - Stream Processing.md` | Batch vs stream · Kafka (conceptual) · Lambda/Kappa arch · Delivery guarantees | 🔴 Not started | `DataEngineering/Checkpoints/CP5 - Stream Pipeline.md` |
 | D6: Cloud & Orchestration | `DataEngineering/D6 - Cloud & Orchestration.md` | Cloud fundamentals · Docker · ADF orchestration · Governance & cost | 🔴 Not started | `DataEngineering/Checkpoints/CP6 - Cloud Deployment.md` |
 | D7: AI-Ready DE *(optional)* | `DataEngineering/D7 - AI-Ready Data Engineering.md` | AI pipelines · Embeddings · Vector DBs · LLM data flows | 🔴 Not started | `DataEngineering/Checkpoints/CP7 - AI Data Engineering.md` |
