@@ -291,6 +291,7 @@ Each domain note also includes a `## 📚 Domain References` section with topic-
 | **Containerization** | **Docker Desktop** | Local container runtime for D6 |
 | **Version Control** | **Git + GitHub** | Standard; required from D1 |
 | **Streaming** | Kafka — **conceptual only** | No hands-on setup required at intern level; teach via diagrams and docs |
+| **Vector search / embeddings** *(D7, optional)* | **DuckDB `vss` + `fts`** and **`fastembed`** | Both DuckDB extensions are **core**. `fastembed` runs `BAAI/bge-small-en-v1.5` (384 dims, **512-token input limit**) on CPU via ONNX — **no PyTorch**, ~65 MB model cache (it pulls the quantized `qdrant/bge-small-en-v1.5-onnx-q` build). Approved 2026-08-19 for D7. Chosen over `sentence-transformers` (~2 GB with PyTorch). Runs **locally only** — Free Edition's restricted outbound internet makes Databricks unsuitable |
 
 ### Tool Setup Principles
 
@@ -408,6 +409,9 @@ Verified live on **DuckDB v1.4.5 LTS** while writing D3.
 | `QUALIFY` | ✅ Yes | Filters on window-function results; `WHERE` cannot (it runs before window evaluation) |
 | `TRY_CAST` | ✅ Yes | Returns `NULL` instead of raising. Plain `CAST('N/A' AS DECIMAL)` raises `Conversion Error` — so a hard cast kills the model *before* any `not_null` test can flag the row |
 | `to_json(table_alias)` | ✅ Yes | Serialises a whole row — handy for quarantine tables |
+| `SIMILAR TO` on multi-line text | ⚠️ **Whole-string anchored, and `.` excludes `\n`** | `text SIMILAR TO '^[A-Z].*'` is **false for any value containing a newline**, so `NOT SIMILAR TO` flags nearly everything. Verified during D7: a "starts mid-sentence" check flagged 556/571 chunks. Use `regexp_matches(text, '^[A-Z]')` — substring match with an explicit anchor |
+| `HAVING` + a window function | ❌ `Binder Error` | `Binder Error: HAVING clause cannot contain window functions!` Use `QUALIFY` instead — e.g. `group by m qualify count(distinct m) over () > 1` |
+| `sha256(varchar)` | ✅ Yes | Returns lowercase hex `VARCHAR`. `substr(sha256(t),1,16)` matches Python's `hashlib.sha256(t.encode()).hexdigest()[:16]` exactly — verified on 571 rows |
 | `date_diff('second', a, b)` | ✅ Yes | |
 | `DATE - interval 3 day` | ✅ Yes | Returns `TIMESTAMP` |
 | `CHECK` constraint enforcement | ✅ Enforced | `Constraint Error: CHECK constraint failed on table ...` |
@@ -434,7 +438,68 @@ Total Files Read: 1
 | `HASH_JOIN` | ✅ Yes | Join operator |
 | `PROJECTION` | ✅ Yes | Column selection step |
 | `INDEX_SCAN` | ❌ Not confirmed | Does not appear even with `PRIMARY KEY` + 10k rows |
+| `HNSW_INDEX_SCAN` | ✅ Yes | **Does** appear, with the `vss` extension — see the DuckDB `vss` / `fts` section below. Not a contradiction with the row above: this is a different index type |
 | `FILTER` (standalone) | ❌ No | Embedded in `SEQ_SCAN`, not a separate node |
+
+---
+
+### DuckDB `vss` / `fts` (vector + full-text search)
+
+**Docs:** [duckdb.org/docs — vss](https://duckdb.org/docs/stable/core_extensions/vss) · [full_text_search](https://duckdb.org/docs/stable/core_extensions/full_text_search)
+
+Execution-verified on **DuckDB 1.4.5** (Python client) while writing D7. Both extensions report `installed_from = 'core'` — neither is a community extension.
+
+#### Extension & index basics
+
+| Behaviour | Result | Notes |
+|-----------|--------|-------|
+| `INSTALL vss; LOAD vss;` | ✅ Core | `installed_from = 'core'`, `install_mode = 'REPOSITORY'` |
+| `INSTALL fts; LOAD fts;` | ✅ Core | Same — gives `PRAGMA create_fts_index` and `fts_main_<table>.match_bm25()` |
+| `array_cosine_similarity` / `array_cosine_distance` / `array_distance` / `array_inner_product` / `array_negative_inner_product` | ✅ All present | Require **fixed-size** arrays, e.g. `FLOAT[384]`; `FLOAT[]` will not take an HNSW index |
+| `CREATE INDEX ... USING HNSW (col) WITH (metric = 'cosine')` | ✅ Works | Metrics: `cosine`, `l2sq`, `ip` |
+| HNSW on a **file-backed** database | ❌ Blocked by default | `Binder Error: HNSW indexes can only be created in in-memory databases, or when the configuration option 'hnsw_enable_experimental_persistence' is set to true` |
+| `SET hnsw_enable_experimental_persistence = true` | ✅ Works | Name is a genuine warning — experimental |
+| `SET hnsw_ef_search = N` | ✅ Works | The runtime recall dial. Measured on 20k × `FLOAT[384]` (random vectors, mean over 20 queries): recall@10 was **≈0.40 / ≈0.55 / ≈0.87** at `ef_search` = 5 / 20 / 200. Re-measured 2026-08-19; run-to-run spread is ±0.05, so quote these as approximate |
+| `PRAGMA hnsw_compact_index('idx')` | ✅ Works | Deletes leave tombstones; the index does **not** shrink until compaction |
+
+#### ⚠️ Index-usage asymmetry — the load-bearing gotcha
+
+Verified on 2,000 × `FLOAT[8]` and again on 571 real embedded chunks. These are mathematically equivalent; **only some use the index**:
+
+| Query form | Plan |
+|-----------|------|
+| `ORDER BY array_cosine_distance(v, q) LIMIT k` | ✅ `HNSW_INDEX_SCAN` |
+| `ORDER BY array_cosine_similarity(v, q) DESC LIMIT k` | ❌ `SEQ_SCAN` — **index silently ignored** |
+| `ORDER BY 1 - array_cosine_similarity(v, q) LIMIT k` | ✅ `HNSW_INDEX_SCAN` |
+| `ORDER BY array_distance(v, q) LIMIT k` against a `cosine` index | ❌ `SEQ_SCAN` — **metric must match the function** |
+| `ORDER BY array_cosine_distance(v, q)` with **no `LIMIT`** | ❌ `SEQ_SCAN` — no top-k to accelerate |
+| `WHERE <filter> ORDER BY array_cosine_distance(v, q) LIMIT k` | ✅ `HNSW_INDEX_SCAN` — a filter does **not** disable it |
+
+> Write retrieval as `array_cosine_distance(...) ASC` **with** a `LIMIT`, and confirm with `EXPLAIN`. The `similarity DESC` form is useful precisely *because* it scans — it gives exact ground truth for measuring ANN recall.
+
+#### Storage overhead
+
+Measured on 20,000 × `FLOAT[384]`, persisted and `CHECKPOINT`ed:
+
+| | Size |
+|---|---|
+| Raw float32 payload | 29.30 MB |
+| Database without HNSW index | 24.51 MB |
+| Database **with** HNSW index | **56.76 MB** |
+
+≈**2.3× total**, because the index stores **its own copy of the vectors** — the graph itself is only ~100–200 bytes/vector. Do not repeat the common "2–5× graph overhead" claim; it overstates the graph cost by roughly an order of magnitude.
+
+#### Hybrid search
+
+`PRAGMA create_fts_index('t','id','text')` then `fts_main_t.match_bm25(id, 'term')` returns BM25 scores (`NULL` for non-matches, so filter `WHERE score IS NOT NULL`). Reciprocal Rank Fusion over a BM25 CTE and a vector CTE is ~15 lines of plain SQL — verified working, no extra dependencies.
+
+#### Embedding generation
+
+DuckDB does **not** generate embeddings. D7 uses **`fastembed`** (approved addition to the stack, 2026-08-19): ONNX runtime, **no PyTorch**, `BAAI/bge-small-en-v1.5` at 384 dims. Measured footprint: ~208 MB venv (incl. duckdb + numpy), **~65 MB** model cache (`fastembed` fetches the quantized `qdrant/bge-small-en-v1.5-onnx-q` build into `$TMPDIR/fastembed_cache`, not the HF hub cache), one-time download on first `embed()` call. `sentence-transformers` was rejected as an alternative because it pulls PyTorch (~2 GB), against the vault's <30-minute setup principle.
+
+> ⚠️ **The model truncates at 512 input tokens, silently.** Verified: appending an unrelated paragraph to an already-oversized text leaves its embedding unchanged (cosine 1.000). Any chunker with a character budget above ~2,000 chars will produce chunks that are embedded from their opening portion only, with no warning.
+
+> ⚠️ **Do not put embedding exercises on Databricks Free Edition.** Outbound internet is restricted to trusted domains unless LinkedIn-verified, so a notebook may not be able to download a model or reach an embedding API. Free Edition also allows only **one AI Search endpoint**, one search unit, and **no Direct Vector Access**.
 
 ---
 
@@ -656,4 +721,4 @@ Writing **Iceberg** from DuckDB is supported but requires an attached Iceberg **
 | D4: Batch Processing & ETL | `DataEngineering/D4 - Batch Processing & ETL.md` | ETL vs ELT · Ingestion (DuckDB file reads, REST) · dbt · Medallion · Delta/Iceberg · Pipeline patterns · Data quality & contracts · Spark · Error handling | ✅ Complete | `DataEngineering/Checkpoints/CP4 - Batch Pipeline.md` |
 | D5: Stream Processing | `DataEngineering/D5 - Stream Processing.md` | Batch vs stream (latency-budget test) · Brokers & Kafka *(conceptual)* — partitions, consumer groups, retention/compaction, KRaft · Event Hubs · Delivery guarantees & effectively-once · Event time, windows & watermarks · Stateful processing, state stores & stream joins · Lambda/Kappa & CDC · Structured Streaming hands-on (Auto Loader → Delta) · Streaming ops | ✅ Complete | `DataEngineering/Checkpoints/CP5 - Stream Pipeline.md` |
 | D6: Cloud & Orchestration | `DataEngineering/D6 - Cloud & Orchestration.md` | Cloud fundamentals · Docker · ADF orchestration · Governance & cost | 🔴 Not started | `DataEngineering/Checkpoints/CP6 - Cloud Deployment.md` |
-| D7: AI-Ready DE *(optional)* | `DataEngineering/D7 - AI-Ready Data Engineering.md` | AI pipelines · Embeddings · Vector DBs · LLM data flows | 🔴 Not started | `DataEngineering/Checkpoints/CP7 - AI Data Engineering.md` |
+| D7: AI-Ready DE *(optional)* | `DataEngineering/D7 - AI-Ready Data Engineering.md` | RAG two-loop model · Source selection & extraction · Chunking strategies · Chunk metadata contract · Embedding pipelines & change detection · Re-embedding migration · ANN indexes (HNSW/IVF) · DuckDB `vss` · Hybrid search (`fts` + BM25 + RRF) · Reranking · Context assembly · Access-controlled retrieval · Prompt injection · Data quality for AI · Retrieval evaluation (recall@k, golden sets) | ✅ Complete | `DataEngineering/Checkpoints/CP7 - AI Data Engineering.md` |

@@ -28,6 +28,13 @@ track: data-engineering
 - [ ] Describe at least 2 data quality risks specific to AI pipelines (e.g., duplicate chunks, stale embeddings, bias in training data)
 - [ ] Build or describe a simple embedding pipeline: load documents → chunk → embed → store in a vector DB
 
+### Hands-On Criteria
+
+- [ ] Build a chunk table carrying the full metadata contract (`chunk_id`, `doc_id`, `source_uri`, `text`, `content_hash`, `embedding_model`) and show `DESCRIBE` confirming the embedding column is a fixed-size array
+- [ ] Create an HNSW index and show `HNSW_INDEX_SCAN` in an `EXPLAIN` plan — then show the query form that silently falls back to `SEQ_SCAN`, and explain why
+- [ ] Demonstrate that deleting a source document leaves **zero** orphan chunks, and name the third place a deletion must also reach
+- [ ] Compute **recall@5** against a golden set of at least 10 questions, then change one pipeline variable and report the new number with a keep-or-revert verdict
+
 ---
 
 **Verified by:** _________________ | **Date:** _________________
