@@ -29,7 +29,7 @@ track: data-engineering
 | 3 | [[D3 - Data Storage & Formats]] | ✅ Complete | [[Checkpoints/CP3 - Storage & Modeling\|CP3]] |
 | 4 | [[D4 - Batch Processing & ETL]] | ✅ Complete | [[Checkpoints/CP4 - Batch Pipeline\|CP4]] |
 | 5 | [[D5 - Stream Processing]] | ✅ Complete | [[Checkpoints/CP5 - Stream Pipeline\|CP5]] |
-| 6 | [[D6 - Cloud & Orchestration]] | 🔴 Not started | [[Checkpoints/CP6 - Cloud Deployment\|CP6]] |
+| 6 | [[D6 - Cloud & Orchestration]] | ✅ Complete | [[Checkpoints/CP6 - Cloud Deployment\|CP6]] |
 | 7 *(optional)* | [[D7 - AI-Ready Data Engineering]] | ✅ Complete | [[Checkpoints/CP7 - AI Data Engineering\|CP7]] |
 
 ---
