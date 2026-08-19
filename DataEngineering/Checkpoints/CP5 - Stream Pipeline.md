@@ -26,6 +26,8 @@ track: data-engineering
 - [ ] Explain at-least-once vs exactly-once delivery semantics and when each matters
 - [ ] Describe Lambda architecture (batch + speed layer) and its trade-off vs Kappa architecture
 - [ ] Explain what stateful processing means in streaming and give one example (e.g., running totals, sessionization)
+- [ ] Run the delivery-semantics exercise from [[D5 - Stream Processing]] §5.3 and report both row counts (11 and 9), explaining which line of code caused each
+- [ ] Draw a diagram of a Kafka topic with 3 partitions and 2 consumer groups, marking which ordering guarantees hold and which do not
 
 ---
 

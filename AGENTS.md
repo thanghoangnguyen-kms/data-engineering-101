@@ -538,6 +538,41 @@ Free Edition runs only serverless compute, which removes Spark APIs a normal clu
 
 > ⚠️ The engine sections below are **documentation-verified, not execution-verified** — no Java or Databricks access existed while writing D4, so no PySpark was run. Upgrade an entry once someone runs it in a notebook.
 
+#### Structured Streaming on serverless *(documentation-verified, during D5)*
+
+Confirmed against [serverless limitations](https://learn.microsoft.com/en-us/azure/databricks/compute/serverless/limitations), [streaming on serverless](https://learn.microsoft.com/en-us/azure/databricks/compute/serverless/streaming) and [Auto Loader options](https://learn.microsoft.com/en-us/azure/databricks/ingestion/cloud-object-storage/auto-loader/options) on 2026-08-19. **No notebook was run** — upgrade these once someone executes them.
+
+| Behaviour | Result | Notes |
+|-----------|--------|-------|
+| Structured Streaming on serverless | ✅ **Supported** | So D5's hands-on section is viable on Free Edition |
+| Supported triggers | **Only two** | `Trigger.AvailableNow()` (**recommended**, Spark 3.3+) and `Trigger.Once()` (supported but **deprecated** since Spark 3.4 / DBR 11.3 LTS) |
+| `Trigger.ProcessingTime(interval)` / `Trigger.Continuous(interval)` | ❌ Not supported | In serverless **notebooks and jobs** |
+| No explicit trigger | ❌ **Hard error** | Spark defaults to `Trigger.ProcessingTime("0 seconds")` → raises `INFINITE_STREAMING_TRIGGER_NOT_SUPPORTED`. **Always set `availableNow=True`** |
+| Lakeflow pipelines | ✅ **Exempt** | Serverless pipelines support triggered, continuous, and real-time modes — the trigger restriction does not apply. Free Edition still caps at one active pipeline per type |
+| `cloudFiles.schemaLocation` | **Required for inference** | It is what *enables* schema inference and evolution — omit it and Auto Loader does not infer a schema at all |
+| Auto Loader type inference on JSON/CSV/XML | ⚠️ **Everything is `String`** | These formats encode no types, so `withWatermark`/`window` on a timestamp column fails until `cloudFiles.schemaHints` pins it (or `inferColumnTypes` is set) |
+| `cloudFiles.schemaEvolutionMode` default | **Conditional** | `addNewColumns` when no schema is supplied; `none` when you supply one. `addNewColumns` **fails the stream** with `UnknownFieldException`, records the new schema, and succeeds on restart |
+| `_rescued_data` column | Added automatically | Whenever Auto Loader infers a schema. Captures values that did not fit — so a type mismatch is never silently dropped |
+| Both trigger limits together | **Differs by source** | Auto Loader: `cloudFiles.maxFilesPerTrigger` (default **1000**) and `cloudFiles.maxBytesPerTrigger` **can both be set** — it consumes to whichever is hit first. Spark's plain file source: they **cannot** both be set |
+| `maxOffsetsPerTrigger` | **Kafka source only** | Setting it on a file source is a silent no-op |
+| Streaming `checkpointLocation` on a UC volume | ✅ Fine | Distinct from `DataFrame.checkpoint()`, which **is** banned on serverless. Do not conflate the two |
+| Writing files to a UC volume | ⚠️ Single sequential write only | Direct-append and random writes are unsupported — `open(path, "a")` fails; one `open(path, "w")` + write is fine |
+| Delta streaming sink output modes | `append` + `complete` only | **No `update` mode.** Upsert-style streaming writes go through `foreachBatch` + `MERGE` |
+
+> ⚠️ **`KAFKA` is listed as a supported serverless data source** (read and write). This does **not** license a Kafka hands-on exercise — this vault has no broker and `AGENTS.md § Confirmed Tech Stack` keeps Kafka **conceptual only**. Free Edition also restricts outbound internet to trusted domains.
+
+#### Azure Event Hubs *(documentation-verified, during D5)*
+
+| Behaviour | Result | Notes |
+|-----------|--------|-------|
+| **Log compaction** | ✅ **Supported (GA)** | Corrects a plausible wrong assumption: it *is* an Event Hubs feature. Enabled per event hub via its cleanup policy (**not** Kafka's `cleanup.policy`); tombstones work the same way — a `null` payload on an existing key; the partition key is the compaction key. **Not on Basic tier.** Microsoft names CDC as a primary use case |
+| Kafka endpoint | Standard / Premium / Dedicated | **Basic tier has none** |
+| Kafka transactions · Kafka Streams | Public **preview** | Premium / Dedicated only |
+| Compression | Premium / Dedicated only | `gzip` |
+| Concept mapping | Cluster→Namespace, Topic→event hub, Partition→Partition, Consumer group→Consumer group, Offset→Offset | |
+
+> The general lesson recorded for future agents: on "Kafka-compatible" services, gaps are usually **tier or preview restrictions rather than missing concepts**, and the *configuration surface* often differs even where behaviour matches. Verify per service **and tier**; do not infer absence from one overview page.
+
 #### Spark engine defaults (OSS)
 
 | Config | Default | Notes |
@@ -619,6 +654,6 @@ Writing **Iceberg** from DuckDB is supported but requires an attached Iceberg **
 | D2: SQL & Data Modeling | `DataEngineering/D2 - SQL & Data Modeling.md` | Window functions/CTEs · SQL for DE · Query perf · Normalization · Dimensional modeling | ✅ Complete | `DataEngineering/Checkpoints/CP2 - SQL Proficiency.md` |
 | D3: Data Storage & Formats | `DataEngineering/D3 - Data Storage & Formats.md` | OLTP/OLAP · Relational vs NoSQL · DWH/Lake/Lakehouse · Object storage · Iceberg/Delta Lake · Catalogs · Formats (CSV/JSON/Parquet/Avro/ORC/Arrow) · Schema evolution · Type mapping & precision loss · Medallion arch · Partitioning & small files · DuckDB local analytics · Vector DBs *(optional)* | ✅ Complete | `DataEngineering/Checkpoints/CP3 - Storage & Modeling.md` |
 | D4: Batch Processing & ETL | `DataEngineering/D4 - Batch Processing & ETL.md` | ETL vs ELT · Ingestion (DuckDB file reads, REST) · dbt · Medallion · Delta/Iceberg · Pipeline patterns · Data quality & contracts · Spark · Error handling | ✅ Complete | `DataEngineering/Checkpoints/CP4 - Batch Pipeline.md` |
-| D5: Stream Processing | `DataEngineering/D5 - Stream Processing.md` | Batch vs stream · Kafka (conceptual) · Lambda/Kappa arch · Delivery guarantees | 🔴 Not started | `DataEngineering/Checkpoints/CP5 - Stream Pipeline.md` |
+| D5: Stream Processing | `DataEngineering/D5 - Stream Processing.md` | Batch vs stream (latency-budget test) · Brokers & Kafka *(conceptual)* — partitions, consumer groups, retention/compaction, KRaft · Event Hubs · Delivery guarantees & effectively-once · Event time, windows & watermarks · Stateful processing, state stores & stream joins · Lambda/Kappa & CDC · Structured Streaming hands-on (Auto Loader → Delta) · Streaming ops | ✅ Complete | `DataEngineering/Checkpoints/CP5 - Stream Pipeline.md` |
 | D6: Cloud & Orchestration | `DataEngineering/D6 - Cloud & Orchestration.md` | Cloud fundamentals · Docker · ADF orchestration · Governance & cost | 🔴 Not started | `DataEngineering/Checkpoints/CP6 - Cloud Deployment.md` |
 | D7: AI-Ready DE *(optional)* | `DataEngineering/D7 - AI-Ready Data Engineering.md` | AI pipelines · Embeddings · Vector DBs · LLM data flows | 🔴 Not started | `DataEngineering/Checkpoints/CP7 - AI Data Engineering.md` |
